@@ -1,27 +1,66 @@
 # PoseAnchor
 
+[![CI](https://github.com/bassmicrobe/PoseAnchor/actions/workflows/ci.yml/badge.svg)](https://github.com/bassmicrobe/PoseAnchor/actions/workflows/ci.yml)
+
 SteamVR / Lighthouse環境の**Vive Trackerだけ**を対象に、瞬間的な異常poseを隠し、
 正常トラッキングへ連続的に戻す実験的なWindows x64サーバードライバです。
 Base Station 2〜4台の構成を想定しています。HMD、コントローラー、Base Stationの
 poseには触れません。
 
-## 現在のMVP
+## 機能概要
 
-- SteamVR起動時に`vrserver.exe`内へ自動ロード
-- `GenericTracker`かつHTC Vive Tracker / Lighthouseと確認できた機器だけを処理
-- 正常時は元の`DriverPose_t`を無加工で通すため、固定平滑化遅延なし
-- 起動・時間断絶後は8個の整合したposeを確認してから有効化
-- 位置・回転innovationで1〜数フレームのpose外れ値を拒否
-- poseが連続しているのに報告速度だけ不整合な場合は、姿勢差分由来の速度へ修復して動きを継続
-- 欠測中は最大150 ms、25 cm / 45°まで速度を減衰させて予測
-- Lighthouseのpose callback自体が止まった場合もwatchdogから同じ制限で補間
-- 同じ軌道へ戻れば即復帰、別位置で安定した場合は120〜350 msでC1連続補正
-- 150 msを超えて信頼できない場合はOut-of-Rangeにして、誤った位置を出し続けない
-- 切断時は補間せず即座に無効化
-- OpenVRに依存しないフィルタ本体と合成テスト
+PoseAnchorは`vrserver.exe`内にロードされるフィルタ層です。Lighthouseドライバが
+SteamVRへ報告する`DriverPose_t`をMinHookで横取りし、Vive Trackerのものだけを
+検査・補正してから本来の受け口へ渡します。SteamVR起動時に自動ロードされ、
+利用者側の常駐アプリや操作は不要です。
 
-状態遷移は`Tracking → Hold → Recovering → Tracking`です。短時間に再捕捉できなければ
-`Lost`へ移り、安定したraw poseを80 ms確認してから再開します。
+### pose処理パイプライン
+
+1. **識別** — `GenericTracker`かつHTC Vive Tracker / Lighthouse構成と確認できた
+   デバイスだけを処理対象にし、それ以外（HMD、コントローラー、SlimeVR等の
+   他社Tracker）は無加工で素通しします
+2. **検査** — 位置・回転innovation、速度整合、ハード速度上限の8ゲートで毎poseを
+   判定し、1〜数フレームの外れ値を拒否します
+3. **修復** — poseが連続しているのに報告速度だけ異常な場合は、姿勢差分由来の
+   速度へ置換して動きを継続します（修復で速度を増やすことはしません）
+4. **補間** — 異常・欠測中は最大150 ms、25 cm / 45°を上限に速度を減衰させて
+   予測します。Lighthouseのpose callback自体が停止した場合もwatchdogが同じ制限で
+   補間します
+5. **復帰** — 元の軌道へ戻れば即復帰、別位置で安定した場合は120〜350 msの
+   C1連続補正で滑らかに吸着します
+6. **放棄** — 150 msを超えて信頼できない場合はOut-of-Rangeを報告し、誤った位置を
+   出し続けません。切断時は補間せず即座に無効化します
+
+### 状態遷移
+
+| 状態 | 意味 | 出力 |
+| --- | --- | --- |
+| Cold | 起動・時間断絶後、8個の整合poseを確認するまで | 無効pose |
+| Tracking | 正常。元poseを無加工で通す（固定平滑化遅延なし） | raw |
+| Hold | 異常・欠測を減衰予測で隠蔽（最大150 ms） | 合成pose |
+| Recovering | 検証済みの新しい軌道へC1連続で補正中 | raw + 補正 |
+| Lost | 信頼できない。安定raw poseを80 ms確認して再開 | 無効pose |
+
+### 主要コンポーネント
+
+- `src/core/tracker_filter.*` — OpenVR非依存の決定論的フィルタ本体。
+  単体テスト・サニタイザ・マイクロベンチマークの対象
+- `src/driver/hooks.*` — MinHookによるpose callbackフック
+  （`IVRServerDriverHost` 005/006両対応、二相ランダウンで安全に解除）
+- `src/driver/pose_adapter.*` — `DriverPose_t`とワールド座標系の相互変換。
+  `poseTimeOffset`を含む運動時刻とsteady clock到着時刻を分離して扱う
+- `src/driver/device_registry.*` — Vive Tracker識別。プロパティの遅延到着に
+  fail-openで対応
+- `src/driver/server_provider.*` — 設定読込、デバイス毎のフィルタ管理、
+  callback停止watchdog、レート制限付き診断ログ
+- `installer/` + `scripts/` — Inno Setup製GUIインストーラー（日英対応、
+  SteamVR実行中ガード付き）とPowerShell開発スクリプト
+
+### 安全設計
+
+フィルタ例外、未識別デバイス、不正なtransformなど判断できない状況では、必ず
+元のposeを素通しします（fail-open）。補正はすべて絶対上限付きで、修復・補間が
+実際の動きより大きな動きを合成することはありません。
 
 ## 重要な制約
 
@@ -74,6 +113,8 @@ Inno Setup、PowerShell操作は不要です。
 
 ### 現在の検証状況
 
+- GitHub Actions CIがpush毎にMSVCビルド+全テストと、コアフィルタのclang
+  ASan/UBSanビルド+テストを実行
 - フィルタの合成回帰テスト、警告をエラー扱いしたビルド、UndefinedBehaviorSanitizerは通過済み
 - OpenVR / MinHookの固定ヘッダーに対するWindows x64向け全ドライバ翻訳単位のコンパイルは通過済み
 - このソース配布には未検証の代替ABI製DLLを含めていません
@@ -126,11 +167,13 @@ SteamVRを終了してください。
 - `RunFrame`のwatchdogは固定64スロットを走査しますが、Tracker以外はatomic判定だけで終了します。
 - リアルタイム経路にAIランタイム、GPU処理、常駐UI、ネットワーク通信は入れません。
 
-MSVC Releaseの手元計測では、1 ms周期の連続運動を100万sample処理したコア部分は
-5回の中央値105.50 ns/sample（105.28〜107.23 ns/sample、入力sampleは事前生成し
-`PoseFilter::push`だけを計測）、`PoseFilter`は1 Trackerあたり1696 bytesでした。
-1 kHz入力でもコア計算はTracker 1台あたり単一CPUコアの約0.011%相当、
-4台で約0.042%相当です。再計測は`build\Release\pose_anchor_benchmark.exe`で行えます。
+MSVC Releaseの手元計測（入力sampleは事前生成し`PoseFilter::push`だけを計測、
+各フェーズ100万sample×5回の中央値）では、1 ms周期の連続運動が
+107.03 ns/sample（105.68〜107.49）、外れ値・Hold・Recoveryを繰り返す外乱系列でも
+143.05 ns/sample（141.60〜146.00）、`PoseFilter`は1 Trackerあたり1696 bytesでした。
+1 kHz入力でもコア計算はTracker 1台あたり単一CPUコアの約0.011%相当（外乱時でも
+約0.014%）、4台で約0.043%相当です。再計測は`build\Release\pose_anchor_benchmark.exe`で
+行えます。
 
 2026-08-21にはRyzen 9 9950X3D / Windows 11 / SteamVR build 23791826 / VIVE Tracker 3.0で、
 Trackerを静止させて`PoseAnchorあり → なし → あり`を各30秒×3回測定しました。
