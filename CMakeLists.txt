@@ -94,6 +94,21 @@ if(POSE_ANCHOR_BUILD_DRIVER)
             /W4 /permissive- /EHsc /utf-8
         )
         add_test(NAME pose_anchor_pose_adapter COMMAND pose_anchor_pose_adapter_tests)
+
+        add_executable(pose_anchor_device_registry_tests
+            tests/device_registry_tests.cpp
+            src/driver/device_registry.cpp
+        )
+        target_include_directories(pose_anchor_device_registry_tests PRIVATE src/driver)
+        target_link_libraries(pose_anchor_device_registry_tests PRIVATE
+            OpenVR::Headers
+        )
+        target_compile_features(pose_anchor_device_registry_tests PRIVATE cxx_std_20)
+        target_compile_options(pose_anchor_device_registry_tests PRIVATE
+            /W4 /permissive- /EHsc /utf-8
+        )
+        add_test(NAME pose_anchor_device_registry
+                 COMMAND pose_anchor_device_registry_tests)
     endif()
 
     add_library(pose_anchor_driver SHARED
