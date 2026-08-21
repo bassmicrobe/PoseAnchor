@@ -569,6 +569,13 @@ bool PoseFilter::isOutlier(const PoseSample& previous, PoseSample& current,
     // the reported speed or exceed the configured hard maximum. Using the interval
     // velocity (rather than an inferred endpoint) also avoids sign-flip oscillation
     // when a moving tracker stops. Pose innovations above still reject the whole sample.
+    //
+    // Deliberate consequence of the never-increase bound: a sensor that
+    // under-reports speed (e.g. constant zero velocity while the pose stream is
+    // moving) repairs toward zero as well. That is accepted as the fail-safe
+    // direction — the pose stream still carries the motion, SteamVR's prediction
+    // merely undershoots — whereas trusting a fabricated higher speed could
+    // overshoot the prediction and inject motion that never happened.
     bool repairedVelocity = false;
     if (!outlier &&
         (linearHardSpeedExceeded || linearDeltaExceeded || linearPoseConsistencyExceeded)) {
