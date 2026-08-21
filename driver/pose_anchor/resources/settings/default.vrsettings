@@ -1,0 +1,25 @@
+{
+  "driver_pose_anchor": {
+    "enable": true,
+    "blocked_by_safe_mode": false,
+    "loadPriority": 9999,
+    "filterEnabled": true,
+    "syntheticWatchdogEnabled": true,
+    "warmupGoodSamples": 8,
+    "basePositionGateMeters": 0.025,
+    "baseRotationGateDegrees": 8.0,
+    "linearAccelerationGate": 80.0,
+    "angularAccelerationGate": 500.0,
+    "velocityConsistencyPositionMeters": 0.005,
+    "velocityConsistencyRotationDegrees": 1.0,
+    "hardMaxLinearSpeed": 25.0,
+    "hardMaxAngularSpeed": 60.0,
+    "holdSeconds": 0.150,
+    "holdDampingSeconds": 0.080,
+    "maxHoldTranslationMeters": 0.250,
+    "maxHoldRotationDegrees": 45.0,
+    "candidateConfirmSamples": 3,
+    "recoveryMinSeconds": 0.120,
+    "recoveryMaxSeconds": 0.350
+  }
+}
