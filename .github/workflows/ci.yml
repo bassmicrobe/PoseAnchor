@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-msvc:
+    name: Windows x64 (MSVC, driver + tests)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset vs2022-x64
+
+      - name: Build (Release)
+        run: cmake --build --preset release
+
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Benchmark smoke run
+        # Correctness only (exit code checks state/diagnostics); timings on shared
+        # CI runners are not meaningful and are not asserted.
+        run: .\build\Release\pose_anchor_benchmark.exe
+
+  linux-sanitizers:
+    name: Core filter (clang, ASan + UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: >
+          cmake -B build-sanitize -G Ninja
+          -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+          -DCMAKE_BUILD_TYPE=Debug
+          -DPOSE_ANCHOR_BUILD_DRIVER=OFF
+          -DBUILD_TESTING=ON
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all -g"
+
+      - name: Build
+        run: cmake --build build-sanitize
+
+      - name: Test
+        run: ctest --test-dir build-sanitize --output-on-failure
+        env:
+          ASAN_OPTIONS: strict_string_checks=1:detect_stack_use_after_return=1
+          UBSAN_OPTIONS: print_stacktrace=1
