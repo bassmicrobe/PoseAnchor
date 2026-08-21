@@ -3,7 +3,15 @@ param(
     [ValidateSet('Debug', 'RelWithDebInfo', 'Release')]
     [string]$Configuration = 'Release',
 
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+
+    # SHA-1 thumbprint of an Authenticode code-signing certificate in the current
+    # user's or machine's certificate store. When set, the driver DLL is signed
+    # before packaging and the setup executable after compilation.
+    [ValidatePattern('^[0-9A-Fa-f]{40}$')]
+    [string]$CertificateThumbprint,
+
+    [string]$TimestampUrl = 'http://timestamp.digicert.com'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -44,6 +52,34 @@ foreach ($relativePath in $requiredFiles) {
     }
 }
 
+function Find-SignTool {
+    $command = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($command) { return $command.Source }
+    $kitsRoot = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'
+    if (Test-Path -LiteralPath $kitsRoot) {
+        $candidate = Get-ChildItem -Path $kitsRoot -Directory |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName 'x64\signtool.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+        if ($candidate) { return $candidate }
+    }
+    throw 'signtool.exe was not found. Install the Windows 10/11 SDK signing tools.'
+}
+
+function Invoke-CodeSign([string]$Path) {
+    & $script:signTool sign /sha1 $CertificateThumbprint /fd SHA256 `
+        /tr $TimestampUrl /td SHA256 $Path
+    if ($LASTEXITCODE -ne 0) { throw "signtool failed for ${Path}: $LASTEXITCODE" }
+}
+
+if ($CertificateThumbprint) {
+    $script:signTool = Find-SignTool
+    # Sign the DLL before Inno Setup packages it, so the installed driver binary
+    # carries a signature too, not just the setup executable.
+    Invoke-CodeSign (Join-Path $packageRoot 'bin\win64\driver_pose_anchor.dll')
+}
+
 $isccCandidates = @(
     (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source),
     (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
@@ -66,6 +102,11 @@ if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
     throw "Inno Setup reported success but the installer is missing: $installer"
 }
 
+# Sign before hashing so the published checksum matches the signed file.
+if ($CertificateThumbprint) {
+    Invoke-CodeSign $installer
+}
+
 $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
 $checksumFile = "$installer.sha256"
 Set-Content -LiteralPath $checksumFile -Encoding Ascii `
@@ -76,5 +117,5 @@ Write-Host "Installer build succeeded: $installer"
 Write-Host "SHA-256: $hash"
 Write-Host "Authenticode: $($signature.Status)"
 if ($signature.Status -ne 'Valid') {
-    Write-Warning 'The installer is unsigned. Sign it with an Authenticode certificate before public distribution.'
+    Write-Warning 'The installer is unsigned. Rerun with -CertificateThumbprint <sha1> to sign it before public distribution.'
 }
