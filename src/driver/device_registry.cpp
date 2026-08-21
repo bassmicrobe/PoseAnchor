@@ -33,6 +33,28 @@ std::string propertyString(vr::CVRPropertyHelpers* properties,
 
 }  // namespace
 
+DeviceKind classifyIdentity(const DeviceIdentity& identity) {
+    if (!identity.isGenericTracker) return DeviceKind::Other;
+
+    const std::string registered = lower(identity.registeredType);
+    const std::string model = lower(identity.model);
+    const std::string system = lower(identity.actualTrackingSystem.empty()
+                                         ? identity.trackingSystem
+                                         : identity.actualTrackingSystem);
+    const std::string controller = lower(identity.controllerType);
+    const std::string maker = lower(identity.manufacturer);
+
+    const bool registeredTracker = contains(registered, "htc/vive_tracker") ||
+                                   contains(registered, "vive_tracker");
+    const bool lighthouse = contains(system, "lighthouse");
+    const bool controllerTracker = contains(controller, "vive_tracker");
+    const bool modelTracker = contains(model, "vive tracker") && contains(maker, "htc");
+    if (lighthouse && (registeredTracker || controllerTracker || modelTracker)) {
+        return DeviceKind::ViveTracker;
+    }
+    return DeviceKind::Other;
+}
+
 DeviceRegistry::DeviceRegistry() {
     reset();
 }
@@ -92,38 +114,28 @@ DeviceKind DeviceRegistry::classify(std::uint32_t index, DeviceMetadata& metadat
     }
     if (deviceClass != vr::TrackedDeviceClass_GenericTracker) return DeviceKind::Other;
 
+    DeviceIdentity identity{};
+    identity.isGenericTracker = true;
     metadata.serial = propertyString(properties, container, vr::Prop_SerialNumber_String, retry);
     metadata.model = propertyString(properties, container, vr::Prop_ModelNumber_String, retry);
     metadata.registeredType = propertyString(
         properties, container, vr::Prop_RegisteredDeviceType_String, retry);
-    const std::string trackingSystem = propertyString(
+    identity.model = metadata.model;
+    identity.registeredType = metadata.registeredType;
+    identity.trackingSystem = propertyString(
         properties, container, vr::Prop_TrackingSystemName_String, retry);
-    const std::string actualTrackingSystem = propertyString(
+    identity.actualTrackingSystem = propertyString(
         properties, container, vr::Prop_ActualTrackingSystemName_String, retry);
-    const std::string controllerType = propertyString(
+    identity.controllerType = propertyString(
         properties, container, vr::Prop_ControllerType_String, retry);
-    const std::string manufacturer = propertyString(
+    identity.manufacturer = propertyString(
         properties, container, vr::Prop_ManufacturerName_String, retry);
 
-    const std::string registered = lower(metadata.registeredType);
-    const std::string model = lower(metadata.model);
-    const std::string system = lower(actualTrackingSystem.empty() ? trackingSystem
-                                                                  : actualTrackingSystem);
-    const std::string controller = lower(controllerType);
-    const std::string maker = lower(manufacturer);
-
-    const bool registeredTracker = contains(registered, "htc/vive_tracker") ||
-                                   contains(registered, "vive_tracker");
-    const bool lighthouse = contains(system, "lighthouse");
-    const bool controllerTracker = contains(controller, "vive_tracker");
-    const bool modelTracker = contains(model, "vive tracker") && contains(maker, "htc");
-    if (lighthouse && (registeredTracker || controllerTracker || modelTracker)) {
-        return DeviceKind::ViveTracker;
-    }
-
-    // A generic tracker whose identity properties are still arriving must stay fail-open.
-    if (retry) return DeviceKind::Unknown;
-    return DeviceKind::Other;
+    const DeviceKind result = classifyIdentity(identity);
+    // A generic tracker whose identity properties are still arriving must stay
+    // fail-open; a positive match wins even with fetches pending.
+    if (result == DeviceKind::Other && retry) return DeviceKind::Unknown;
+    return result;
 }
 
 }  // namespace pose_anchor::driver

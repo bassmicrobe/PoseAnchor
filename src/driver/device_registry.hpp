@@ -20,6 +20,23 @@ struct DeviceMetadata {
     std::string registeredType;
 };
 
+// Identity properties already fetched from SteamVR, separated from the fetch so
+// the classification decision itself is unit-testable without a driver context.
+struct DeviceIdentity {
+    bool isGenericTracker{};
+    std::string registeredType;
+    std::string model;
+    std::string trackingSystem;
+    std::string actualTrackingSystem;
+    std::string controllerType;
+    std::string manufacturer;
+};
+
+// Pure decision: ViveTracker for a lighthouse-tracked device identifying as a
+// Vive Tracker, Other for everything else. Callers own the fail-open retry
+// handling for identities whose properties are still arriving.
+[[nodiscard]] DeviceKind classifyIdentity(const DeviceIdentity& identity);
+
 class DeviceRegistry {
 public:
     DeviceRegistry();
