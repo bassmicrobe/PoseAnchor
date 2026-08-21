@@ -270,6 +270,8 @@ void ServerProvider::loadSettings() {
     auto* settings = vr::VRSettings();
     if (!settings) return;
 
+    constexpr double kRadiansPerDegree = 0.017453292519943295;
+
     const auto getBool = [settings](const char* key, bool fallback) {
         vr::EVRSettingsError error = vr::VRSettingsError_None;
         const bool value = settings->GetBool(kSettingsSection, key, &error);
@@ -293,8 +295,11 @@ void ServerProvider::loadSettings() {
     config_.warmupGoodSamples = getInt("warmupGoodSamples", config_.warmupGoodSamples);
     config_.basePositionGateMeters = getFloat(
         "basePositionGateMeters", config_.basePositionGateMeters);
+    // Degree-based keys fall back to the radian defaults in FilterConfig so the
+    // two representations cannot drift apart.
     config_.baseRotationGateRadians = getFloat(
-        "baseRotationGateDegrees", 8.0) * 0.017453292519943295;
+        "baseRotationGateDegrees",
+        config_.baseRotationGateRadians / kRadiansPerDegree) * kRadiansPerDegree;
     config_.linearAccelerationGate = getFloat(
         "linearAccelerationGate", config_.linearAccelerationGate);
     config_.angularAccelerationGate = getFloat(
@@ -302,7 +307,8 @@ void ServerProvider::loadSettings() {
     config_.velocityConsistencyPositionMeters = getFloat(
         "velocityConsistencyPositionMeters", config_.velocityConsistencyPositionMeters);
     config_.velocityConsistencyRotationRadians = getFloat(
-        "velocityConsistencyRotationDegrees", 1.0) * 0.017453292519943295;
+        "velocityConsistencyRotationDegrees",
+        config_.velocityConsistencyRotationRadians / kRadiansPerDegree) * kRadiansPerDegree;
     config_.hardMaxLinearSpeed = getFloat(
         "hardMaxLinearSpeed", config_.hardMaxLinearSpeed);
     config_.hardMaxAngularSpeed = getFloat(
@@ -313,7 +319,8 @@ void ServerProvider::loadSettings() {
     config_.maxHoldTranslationMeters = getFloat(
         "maxHoldTranslationMeters", config_.maxHoldTranslationMeters);
     config_.maxHoldRotationRadians = getFloat(
-        "maxHoldRotationDegrees", 45.0) * 0.017453292519943295;
+        "maxHoldRotationDegrees",
+        config_.maxHoldRotationRadians / kRadiansPerDegree) * kRadiansPerDegree;
     config_.candidateConfirmSamples = getInt(
         "candidateConfirmSamples", config_.candidateConfirmSamples);
     config_.recoveryMinSeconds = getFloat(

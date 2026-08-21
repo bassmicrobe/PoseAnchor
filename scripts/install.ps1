@@ -35,8 +35,15 @@ foreach ($required in @(
     }
 }
 $vrPathReg = Find-SteamVrPathReg
-$existingOutput = @(& $vrPathReg finddriver pose_anchor 2>&1)
+# Under ErrorActionPreference=Stop, Windows PowerShell 5.1 turns any native stderr
+# line into a terminating NativeCommandError when the stream is redirected. Relax
+# the preference around the call and drop stderr so the stdout path parsing below
+# cannot be corrupted if a future vrpathreg starts writing diagnostics there.
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$existingOutput = @(& $vrPathReg finddriver pose_anchor 2>$null | ForEach-Object { "$_" })
 $findExitCode = $LASTEXITCODE
+$ErrorActionPreference = $previousErrorActionPreference
 if ($findExitCode -eq 0) {
     $existingPath = [string]($existingOutput | Where-Object { $_ } | Select-Object -Last 1)
     $existingFullPath = [IO.Path]::GetFullPath($existingPath).TrimEnd('\')
