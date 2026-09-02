@@ -58,6 +58,7 @@ std::int64_t warmStationary(PoseFilter& filter, int count = 8) {
         }
     }
     CHECK(filter.state() == FilterState::Tracking);
+    CHECK(!filter.lastDecisionMetrics().valid);
     return time;
 }
 
@@ -555,6 +556,46 @@ void testNoisyStationaryHasNoFalsePositive() {
     CHECK(filter.diagnostics().rejectedSamples == 0);
 }
 
+void testSquaredGateBoundaryMatchesNormComparison() {
+    // These vectors are exactly on their stated norm boundaries after IEEE-754
+    // square root rounding, while their rounded squared norms are one ulp above.
+    // A squared-only comparison would therefore repair/reject them incorrectly.
+    const Vec3 accelerationBoundary{
+        79.99999999644695, 0.0007539822368503881, 0.0};
+    CHECK(accelerationBoundary.norm() == 80.0);
+    CHECK(accelerationBoundary.squaredNorm() > 80.0 * 80.0);
+
+    PoseFilter accelerationFilter;
+    std::int64_t time = warmStationary(accelerationFilter);
+    time += ms(10.0);
+    PoseSample accelerationSample = sample(time);
+    accelerationSample.world.linearAcceleration = accelerationBoundary;
+    const FilterOutput accelerationOutput = accelerationFilter.push(accelerationSample);
+    CHECK(accelerationOutput.state == FilterState::Tracking);
+    CHECK(!accelerationOutput.modified);
+    CHECK((accelerationOutput.reasons & ReasonAccelerationRepaired) == 0);
+    CHECK(accelerationOutput.world.linearAcceleration.norm() == 80.0);
+
+    FilterConfig config{};
+    config.hardMaxLinearSpeed = 40.0;
+    config.linearAccelerationGate = 1000.0;
+    config.velocitySlack = 20.0;
+    PoseFilter velocityFilter(config);
+    time = warmStationary(velocityFilter);
+
+    const Vec3 velocityBoundary{
+        39.99999999995065, 0.00006283185307177003, 0.0};
+    CHECK(velocityBoundary.norm() == 40.0);
+    CHECK(velocityBoundary.squaredNorm() > 40.0 * 40.0);
+    time += ms(50.0);
+    const FilterOutput velocityOutput = velocityFilter.push(
+        sample(time, {}, {}, velocityBoundary));
+    CHECK(velocityOutput.state == FilterState::Tracking);
+    CHECK(!velocityOutput.modified);
+    CHECK((velocityOutput.reasons & ReasonVelocityRepaired) == 0);
+    CHECK(velocityOutput.world.linearVelocity.norm() == 40.0);
+}
+
 void testVelocityRepairAndSilenceTick() {
     PoseFilter filter;
     std::int64_t time = warmStationary(filter);
@@ -641,6 +682,7 @@ int main() {
     testMalformedColdPoseIsForcedInvalid();
     testAccelerationRepairAndBadConfig();
     testNoisyStationaryHasNoFalsePositive();
+    testSquaredGateBoundaryMatchesNormComparison();
     testVelocityRepairAndSilenceTick();
     testPoseTimeOffsetDoesNotFakeSilenceOrReset();
     testDisconnectIsImmediate();

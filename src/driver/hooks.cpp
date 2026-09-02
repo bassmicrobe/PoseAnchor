@@ -235,9 +235,15 @@ void InterfaceHooks::observeInterface(const char* version, void* interfacePointe
     std::scoped_lock lock(mutex_);
     if (shuttingDown_) return;
     if (std::strcmp(version, "IVRServerDriverHost_006") == 0) {
-        installPoseHook(interfacePointer, true);
+        const bool newlyObserved = poseTarget006_ == nullptr;
+        if (installPoseHook(interfacePointer, true) && newlyObserved && provider_) {
+            provider_->log("IVRServerDriverHost_006 pose hook installed");
+        }
     } else if (std::strcmp(version, "IVRServerDriverHost_005") == 0) {
-        installPoseHook(interfacePointer, false);
+        const bool newlyObserved = poseTarget005_ == nullptr;
+        if (installPoseHook(interfacePointer, false) && newlyObserved && provider_) {
+            provider_->log("IVRServerDriverHost_005 pose hook installed");
+        }
     }
 }
 
@@ -246,7 +252,19 @@ void InterfaceHooks::filterAndForward(PoseFn original, vr::IVRServerDriverHost* 
                                       const vr::DriverPose_t* pose,
                                       std::uint32_t poseSize) noexcept {
     if (!original || !pose) return;
-    if (deviceIndex < poseRoutes_.size() && poseSize == sizeof(vr::DriverPose_t)) {
+    if (!provider_ || poseSize != sizeof(vr::DriverPose_t) ||
+        deviceIndex >= vr::k_unMaxTrackedDeviceCount) {
+        original(host, deviceIndex, *pose, poseSize);
+        return;
+    }
+    if (!provider_->isFilterTarget(deviceIndex)) {
+        original(host, deviceIndex, *pose, poseSize);
+        return;
+    }
+
+    vr::DriverPose_t filtered;
+    bool useFiltered = false;
+    try {
         auto& route = poseRoutes_[deviceIndex];
         const std::uint64_t before = route.sequence.load(std::memory_order_acquire);
         vr::IVRServerDriverHost* const knownHost =
@@ -257,27 +275,21 @@ void InterfaceHooks::filterAndForward(PoseFn original, vr::IVRServerDriverHost* 
                                  knownHost == host && knownOriginal == original;
         if (!stableMatch) {
             std::scoped_lock routeLock(route.mutex);
-            // An odd sequence prevents the lock-free reader from accepting a
-            // transient host/trampoline pair while these two atomics are updated.
+            // An odd sequence prevents the lock-free reader from accepting a transient
+            // host/trampoline pair while these two atomics are updated.
             route.sequence.fetch_add(1, std::memory_order_acq_rel);
             route.host.store(host, std::memory_order_relaxed);
             route.original.store(original, std::memory_order_relaxed);
             route.sequence.fetch_add(1, std::memory_order_release);
         }
-    }
-    if (!provider_ || poseSize != sizeof(vr::DriverPose_t) ||
-        deviceIndex >= vr::k_unMaxTrackedDeviceCount) {
-        original(host, deviceIndex, *pose, poseSize);
-        return;
-    }
 
-    vr::DriverPose_t filtered = *pose;
-    try {
-        provider_->filterPose(deviceIndex, filtered);
+        useFiltered = provider_->filterPose(deviceIndex, *pose, filtered);
     } catch (...) {
-        filtered = *pose;  // The hook must always fail open.
+        // Route bookkeeping and filtering must both fail open. The single call
+        // below forwards the raw pose exactly once after any C++ exception.
+        useFiltered = false;
     }
-    original(host, deviceIndex, filtered, poseSize);
+    original(host, deviceIndex, useFiltered ? filtered : *pose, poseSize);
 }
 
 void* InterfaceHooks::vtableTarget(void* object, int index) noexcept {

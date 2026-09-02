@@ -61,7 +61,7 @@ DeviceRegistry::DeviceRegistry() {
 
 void DeviceRegistry::reset() {
     for (auto& value : kinds_) value.store(DeviceKind::Unknown, std::memory_order_relaxed);
-    for (auto& value : pending_) value.store(false, std::memory_order_relaxed);
+    pendingMask_.store(0, std::memory_order_relaxed);
     for (auto& value : metadata_) value = {};
 }
 
@@ -71,12 +71,19 @@ DeviceKind DeviceRegistry::kind(std::uint32_t index) const noexcept {
 }
 
 void DeviceRegistry::requestClassification(std::uint32_t index) noexcept {
-    if (index < pending_.size()) pending_[index].store(true, std::memory_order_release);
+    if (index >= vr::k_unMaxTrackedDeviceCount) return;
+    const std::uint64_t bit = std::uint64_t{1} << index;
+    // An RMW cannot miss a concurrent RunFrame exchange. This path exists only
+    // while a device is Unknown; classified steady-state callbacks never write it.
+    pendingMask_.fetch_or(bit, std::memory_order_release);
 }
 
 void DeviceRegistry::classifyPending() {
-    for (std::uint32_t index = 0; index < pending_.size(); ++index) {
-        if (!pending_[index].exchange(false, std::memory_order_acq_rel)) continue;
+    if (pendingMask_.load(std::memory_order_acquire) == 0) return;
+    const std::uint64_t pending = pendingMask_.exchange(0, std::memory_order_acq_rel);
+    for (std::uint32_t index = 0; index < vr::k_unMaxTrackedDeviceCount; ++index) {
+        const std::uint64_t bit = std::uint64_t{1} << index;
+        if ((pending & bit) == 0) continue;
         if (kinds_[index].load(std::memory_order_acquire) != DeviceKind::Unknown) continue;
 
         DeviceMetadata metadata{};
@@ -86,7 +93,7 @@ void DeviceRegistry::classifyPending() {
             metadata_[index] = std::move(metadata);
             kinds_[index].store(result, std::memory_order_release);
         } else if (retry) {
-            pending_[index].store(true, std::memory_order_release);
+            pendingMask_.fetch_or(bit, std::memory_order_release);
         }
     }
 }

@@ -1,13 +1,34 @@
 #include "pose_anchor/tracker_filter.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <new>
 #include <vector>
 
 using namespace pose_anchor;
+
+namespace {
+std::atomic_uint64_t allocationCount{};
+}
+
+void* operator new(std::size_t size) {
+    if (void* memory = std::malloc(size)) {
+        allocationCount.fetch_add(1, std::memory_order_relaxed);
+        return memory;
+    }
+    throw std::bad_alloc{};
+}
+
+void* operator new[](std::size_t size) { return ::operator new(size); }
+void operator delete(void* memory) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete[](void* memory) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 
 namespace {
 
@@ -32,11 +53,13 @@ PoseSample makeSample(std::int64_t timeNs, double timeSeconds) {
 struct PhaseResult {
     double nanosecondsPerSample{};
     std::uint64_t modified{};
+    std::uint64_t allocations{};
 };
 
 // Timing wraps only PoseFilter::push; the input sequence is pre-generated.
 PhaseResult timePushes(PoseFilter& filter, const std::vector<PoseSample>& samples) {
     PhaseResult result{};
+    const std::uint64_t allocationsBefore = allocationCount.load(std::memory_order_relaxed);
     const auto started = std::chrono::steady_clock::now();
     for (const PoseSample& input : samples) {
         result.modified += filter.push(input).modified ? 1u : 0u;
@@ -45,6 +68,7 @@ PhaseResult timePushes(PoseFilter& filter, const std::vector<PoseSample>& sample
     result.nanosecondsPerSample = static_cast<double>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()) /
         static_cast<double>(samples.size());
+    result.allocations = allocationCount.load(std::memory_order_relaxed) - allocationsBefore;
     return result;
 }
 
@@ -73,7 +97,7 @@ int main() {
         tracking = timePushes(filter, samples);
     }
     const bool trackingClean = filter.state() == FilterState::Tracking &&
-                               tracking.modified == 0;
+                               tracking.modified == 0 && tracking.allocations == 0;
 
     // Phase 2: disturbed input exercising the outlier/Hold/Recovery paths, which
     // dominate cost exactly when tracking is already struggling. Per 128-sample
@@ -100,7 +124,8 @@ int main() {
     }
     const FilterDiagnostics diagnostics = filter.diagnostics();
     const bool disturbedExercised = diagnostics.holdEntries > 0 &&
-                                    diagnostics.recoveryEntries > 0;
+                                    diagnostics.recoveryEntries > 0 &&
+                                    disturbed.allocations == 0;
 
     std::cout << std::fixed << std::setprecision(2)
               << "samples_per_phase=" << kMeasuredSamples << '\n'
@@ -108,8 +133,10 @@ int main() {
               << "tracking_samples_per_second="
               << 1e9 / tracking.nanosecondsPerSample << '\n'
               << "tracking_modified_samples=" << tracking.modified << '\n'
+              << "tracking_allocations=" << tracking.allocations << '\n'
               << "disturbed_ns_per_sample=" << disturbed.nanosecondsPerSample << '\n'
               << "disturbed_modified_samples=" << disturbed.modified << '\n'
+              << "disturbed_allocations=" << disturbed.allocations << '\n'
               << "disturbed_hold_entries=" << diagnostics.holdEntries << '\n'
               << "disturbed_recovery_entries=" << diagnostics.recoveryEntries << '\n'
               << "disturbed_rejected_samples=" << diagnostics.rejectedSamples << '\n'

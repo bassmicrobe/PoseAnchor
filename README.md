@@ -111,6 +111,14 @@ CMakeはOpenVR v2.15.6とMinHook v1.3.4をGitのcommit hashで固定取得しま
 `dist\PoseAnchor-Setup-0.1.0.exe`が生成されます。利用者側にVisual Studio、CMake、
 Inno Setup、PowerShell操作は不要です。
 
+上記はローカル検証用の未署名ビルドです。公開配布ではコード署名証明書のSHA-1 thumbprintを
+指定します。driver DLLと状態画面を先に署名し、Inno SetupがSetup本体と同梱
+アンインストーラーを署名してから最終チェックサムを生成します。
+
+```powershell
+.\scripts\build-installer.ps1 -CertificateThumbprint '<40桁のthumbprint>'
+```
+
 ### 現在の検証状況
 
 - GitHub Actions CIがpush毎にMSVCビルド+全テストと、コアフィルタのclang
@@ -123,6 +131,8 @@ Inno Setup、PowerShell操作は不要です。
 - 旧版で108件の誤状態遷移が出た35秒の手動移動・回転を再試験し、Hold/Recovery/Lostゼロ
 - 物理遮蔽では150 msまでHoldした後にLostへ移り、安定pose確認後にTrackingへ復帰
 - GUIインストール、同一バージョン更新、登録path移行、アンインストール、登録消去を実機確認済み
+- オンデマンドの状態画面で登録、現SteamVRセッションのdriver/hook、Tracker、
+  Hold/Recovery/Lostを確認でき、古いセッションを有効状態として表示しないことを確認済み
 
 SteamVRへ登録するのは、必ず上記手順でMSVCビルドした`build\pose_anchor\`だけにしてください。
 
@@ -134,11 +144,17 @@ SteamVRの場所を検出し、ファイル配置、既存の同名登録確認�
 管理者権限やコマンド操作は不要です。
 
 解除はWindowsの「設定 → アプリ → インストールされているアプリ → PoseAnchor」または
-スタートメニューの「Uninstall PoseAnchor」から行えます。同梱アンインストーラーが
+スタートメニューの「PoseAnchor をアンインストールする」から行えます。同梱アンインストーラーが
 SteamVR登録解除後にファイルを削除します。
 
-アップグレードやアンインストール時にDLLが使用中なら、インストーラーの案内に従って
-SteamVRを終了してください。
+アップグレードやアンインストール時にSteamVRが実行中なら、ファイルや登録を変更せずに
+終了を案内します。インストーラーがSteamVRを自動終了することはありません。
+
+インストール後はスタートメニューの「PoseAnchor ステータス」で、登録状態、SteamVRの
+実行状態、現セッションでのdriver/hook読込、認識したVive Tracker、直近の
+Hold/Recovery/Lostを確認できます。この画面は必要なときだけ起動し、閉じるとプロセスは
+残りません。判定には実行中のSteamVRセッションだけを使い、以前のログを稼働中の証拠には
+しません。
 
 ### 開発ビルドの手動登録
 
@@ -164,16 +180,34 @@ SteamVRを終了してください。
 - フィルタはVive Trackerと確定したデバイスにだけ遅延生成し、最大64デバイス分を先に確保しません。
 - pose転送先が変わらない通常時はatomic fast pathを使い、経路mutexを取りません。
 - 詳細診断は状態遷移時だけ生成し、同種イベントを1秒単位で抑制します。
-- `RunFrame`のwatchdogは固定64スロットを走査しますが、Tracker以外はatomic判定だけで終了します。
+- 分類待ちは64個のatomicを毎frame更新せず、単一bit maskが空なら即終了します。
+- `RunFrame`のwatchdogは有効時だけ固定64スロットを走査し、Tracker以外はatomic判定だけで終了します。
 - リアルタイム経路にAIランタイム、GPU処理、常駐UI、ネットワーク通信は入れません。
 
+オンデマンド状態画面は20回の実機計測で起動中央値75.25 ms、表示中のPrivateメモリ中央値
+3.01 MiB（Working set 16.86 MiB）でした。全20回で画面を閉じた後の残存プロセスは0です。
+
 MSVC Releaseの手元計測（入力sampleは事前生成し`PoseFilter::push`だけを計測、
-各フェーズ100万sample×5回の中央値）では、1 ms周期の連続運動が
-107.03 ns/sample（105.68〜107.49）、外れ値・Hold・Recoveryを繰り返す外乱系列でも
-143.05 ns/sample（141.60〜146.00）、`PoseFilter`は1 Trackerあたり1696 bytesでした。
-1 kHz入力でもコア計算はTracker 1台あたり単一CPUコアの約0.011%相当（外乱時でも
-約0.014%）、4台で約0.043%相当です。再計測は`build\Release\pose_anchor_benchmark.exe`で
-行えます。
+各フェーズ100万sample×7回の中央値）では、1 ms周期の連続運動が
+94.30 ns/sample（93.96〜95.09）、外れ値・Hold・Recoveryを繰り返す外乱系列でも
+125.55 ns/sample（125.48〜127.03）、`PoseFilter`は1 Trackerあたり1696 bytesでした。
+同じMSVC ABIでdriverの固定管理状態は`ServerProvider` 43,352 bytes + hook 6,776 bytes
+（合計約49 KiB）で、ここに識別済みTrackerごとのfilterが加わります。
+1 kHz入力でもコア計算はTracker 1台あたり単一CPUコアの約0.009%相当（外乱時でも
+約0.013%）、4台で約0.038%相当（外乱時約0.050%）です。通常・外乱の計測区間では
+ヒープ確保0件も検証します。
+
+同じ計測で、分類待ちなしの処理は1.66 ns/call（1.65〜1.66）、watchdogの
+64-slot走査は51.10 ns/frame（50.97〜53.91、90 Hzで約4.6 µs/秒）でした。
+また、非対象デバイス経路から削除した280-byte `DriverPose_t`コピー単体は
+2.84 ns/call（2.84〜2.86）でした。残した安全機構の単体費用はcallback rundownの
+atomic加減算pairが7.08 ns、Tracker mutexの非競合lock/unlockが11.03 ns、
+`steady_clock::now`が15.38 nsでした。再構成・Releaseビルド・7回のmedian/min/max集計は
+次の1コマンドで再現できます（共有CIでは時間値を合否判定に使いません）。
+
+```powershell
+.\scripts\benchmark.ps1
+```
 
 2026-08-21にはRyzen 9 9950X3D / Windows 11 / SteamVR build 23791826 / VIVE Tracker 3.0で、
 Trackerを静止させて`PoseAnchorあり → なし → あり`を各30秒×3回測定しました。

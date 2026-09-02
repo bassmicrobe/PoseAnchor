@@ -12,16 +12,19 @@ double secondsBetween(std::int64_t newer, std::int64_t older) {
     return static_cast<double>(newer - older) / kNanosecondsPerSecond;
 }
 
-bool usableQuaternion(const Quat& q) {
-    if (!q.finite()) {
-        return false;
-    }
-    const double n2 = q.squaredNorm();
-    return n2 >= 0.25 && n2 <= 2.25;
-}
-
 double stableNorm(Vec3 value) {
     return value.norm();
+}
+
+bool normExceedsGate(Vec3 value, double gate) noexcept {
+    const double magnitudeSquared = value.squaredNorm();
+    if (magnitudeSquared <= gate * gate) {
+        return false;
+    }
+    // Squaring avoids a square root for the overwhelmingly common in-gate path,
+    // but the rounded squared comparison can be one ulp above an exact boundary.
+    // Confirm only candidates so the public `norm() > gate` behavior is preserved.
+    return std::sqrt(magnitudeSquared) > gate;
 }
 
 Vec3 limitMagnitude(Vec3 value, double maximum) {
@@ -394,17 +397,28 @@ FilterOutput PoseFilter::handleLost(const PoseSample& input) {
 }
 
 bool PoseFilter::prepareRunningSample(PoseSample& sample, std::uint32_t& reasons) {
-    if (!sample.world.position.finite() || !usableQuaternion(sample.world.orientation)) {
+    const Quat inputOrientation = sample.world.orientation;
+    if (!sample.world.position.finite() || !inputOrientation.finite()) {
         return false;
     }
 
-    const double originalNorm = std::sqrt(sample.world.orientation.squaredNorm());
-    sample.world.orientation = normalized(sample.world.orientation);
+    const double orientationNormSquared = inputOrientation.squaredNorm();
+    if (orientationNormSquared < 0.25 || orientationNormSquared > 2.25) {
+        return false;
+    }
+    const double originalNorm = std::sqrt(orientationNormSquared);
+    const double inverseNorm = 1.0 / originalNorm;
+    sample.world.orientation = {
+        inputOrientation.w * inverseNorm,
+        inputOrientation.x * inverseNorm,
+        inputOrientation.y * inverseNorm,
+        inputOrientation.z * inverseNorm,
+    };
     if (std::abs(originalNorm - 1.0) > 1e-6) {
         reasons |= ReasonQuaternionRepaired;
     }
-    if (hasTrusted_) {
-        sample.world.orientation = sameHemisphere(sample.world.orientation, trusted_.world.orientation);
+    if (hasTrusted_ && dot(sample.world.orientation, trusted_.world.orientation) < 0.0) {
+        sample.world.orientation = -sample.world.orientation;
     }
 
     bool repairedVelocity = false;
@@ -433,12 +447,14 @@ bool PoseFilter::prepareRunningSample(PoseSample& sample, std::uint32_t& reasons
     }
     bool repairedAcceleration = false;
     if (!sample.world.linearAcceleration.finite() ||
-        sample.world.linearAcceleration.norm() > config_.linearAccelerationGate) {
+        normExceedsGate(sample.world.linearAcceleration,
+                        config_.linearAccelerationGate)) {
         sample.world.linearAcceleration = {};
         repairedAcceleration = true;
     }
     if (!sample.world.angularAcceleration.finite() ||
-        sample.world.angularAcceleration.norm() > config_.angularAccelerationGate) {
+        normExceedsGate(sample.world.angularAcceleration,
+                        config_.angularAccelerationGate)) {
         sample.world.angularAcceleration = {};
         repairedAcceleration = true;
     }
@@ -483,72 +499,97 @@ bool PoseFilter::isOutlier(const PoseSample& previous, PoseSample& current,
         (config_.velocityConsistencyRotationRadians + config_.angularVelocitySlack * dt +
          0.5 * config_.angularAccelerationGate * dt * dt);
 
-    const double translation = stableNorm(displacement);
-    const double rotationAmount = stableNorm(rotation);
-    const double positionInnovationAmount = stableNorm(positionInnovation);
-    const double rotationInnovationAmount = stableNorm(rotationInnovation);
-    const double linearSpeed = stableNorm(current.world.linearVelocity);
-    const double angularSpeed = stableNorm(current.world.angularVelocity);
-    const double linearDelta = stableNorm(
-        current.world.linearVelocity - previous.world.linearVelocity);
-    const double angularDelta = stableNorm(
-        current.world.angularVelocity - previous.world.angularVelocity);
-    const double linearVelocityPoseResidual = stableNorm(velocityPoseResidual);
-    const double angularVelocityPoseResidualAmount = stableNorm(angularVelocityPoseResidual);
+    const Vec3 linearVelocityDelta =
+        current.world.linearVelocity - previous.world.linearVelocity;
+    const Vec3 angularVelocityDelta =
+        current.world.angularVelocity - previous.world.angularVelocity;
     const double linearDeltaGate = config_.linearAccelerationGate * dt + config_.velocitySlack;
     const double angularDeltaGate =
         config_.angularAccelerationGate * dt + config_.angularVelocitySlack;
 
-    const bool positionInnovationExceeded = positionInnovationAmount > positionGate;
-    const bool rotationInnovationExceeded = rotationInnovationAmount > rotationGate;
-    const bool linearHardSpeedExceeded = linearSpeed > config_.hardMaxLinearSpeed;
-    const bool linearDeltaExceeded = linearDelta > linearDeltaGate;
+    // The common Tracking path needs only squared comparisons. A candidate above a
+    // squared boundary receives the old norm comparison as a rare slow-path check,
+    // preserving exact boundary behavior while normal samples avoid the square roots
+    // and 200-byte diagnostics write. Rejected and velocity-repaired samples still
+    // retain the complete metric snapshot used for field diagnostics.
+    const bool positionInnovationExceeded =
+        normExceedsGate(positionInnovation, positionGate);
+    const bool rotationInnovationExceeded =
+        normExceedsGate(rotationInnovation, rotationGate);
+    const bool linearHardSpeedExceeded =
+        normExceedsGate(current.world.linearVelocity, config_.hardMaxLinearSpeed);
+    const bool linearDeltaExceeded =
+        normExceedsGate(linearVelocityDelta, linearDeltaGate);
     const bool linearPoseConsistencyExceeded =
-        linearVelocityPoseResidual > velocityConsistencyGate;
-    const bool angularHardSpeedExceeded = angularSpeed > config_.hardMaxAngularSpeed;
-    const bool angularDeltaExceeded = angularDelta > angularDeltaGate;
+        normExceedsGate(velocityPoseResidual, velocityConsistencyGate);
+    const bool angularHardSpeedExceeded =
+        normExceedsGate(current.world.angularVelocity, config_.hardMaxAngularSpeed);
+    const bool angularDeltaExceeded =
+        normExceedsGate(angularVelocityDelta, angularDeltaGate);
     const bool angularPoseConsistencyExceeded =
-        angularVelocityPoseResidualAmount > angularVelocityConsistencyGate;
+        normExceedsGate(angularVelocityPoseResidual, angularVelocityConsistencyGate);
 
-    lastDecisionMetrics_ = {};
-    lastDecisionMetrics_.valid = true;
-    lastDecisionMetrics_.rawDtSeconds = rawDt;
-    lastDecisionMetrics_.dtSeconds = dt;
-    lastDecisionMetrics_.gateScale = gateScale;
-    lastDecisionMetrics_.translationMeters = translation;
-    lastDecisionMetrics_.rotationRadians = rotationAmount;
-    lastDecisionMetrics_.positionInnovationMeters = positionInnovationAmount;
-    lastDecisionMetrics_.positionGateMeters = positionGate;
-    lastDecisionMetrics_.rotationInnovationRadians = rotationInnovationAmount;
-    lastDecisionMetrics_.rotationGateRadians = rotationGate;
-    lastDecisionMetrics_.linearSpeedMetersPerSecond = linearSpeed;
-    lastDecisionMetrics_.hardLinearSpeedGateMetersPerSecond = config_.hardMaxLinearSpeed;
-    lastDecisionMetrics_.angularSpeedRadiansPerSecond = angularSpeed;
-    lastDecisionMetrics_.hardAngularSpeedGateRadiansPerSecond = config_.hardMaxAngularSpeed;
-    lastDecisionMetrics_.repairedLinearSpeedMetersPerSecond = linearSpeed;
-    lastDecisionMetrics_.repairedAngularSpeedRadiansPerSecond = angularSpeed;
-    lastDecisionMetrics_.linearVelocityDeltaMetersPerSecond = linearDelta;
-    lastDecisionMetrics_.linearVelocityDeltaGateMetersPerSecond = linearDeltaGate;
-    lastDecisionMetrics_.angularVelocityDeltaRadiansPerSecond = angularDelta;
-    lastDecisionMetrics_.angularVelocityDeltaGateRadiansPerSecond = angularDeltaGate;
-    lastDecisionMetrics_.linearPoseResidualMeters = linearVelocityPoseResidual;
-    lastDecisionMetrics_.linearPoseResidualGateMeters = velocityConsistencyGate;
-    lastDecisionMetrics_.angularPoseResidualRadians = angularVelocityPoseResidualAmount;
-    lastDecisionMetrics_.angularPoseResidualGateRadians = angularVelocityConsistencyGate;
+    const bool anyGateExceeded = positionInnovationExceeded || rotationInnovationExceeded ||
+                                 linearHardSpeedExceeded || linearDeltaExceeded ||
+                                 linearPoseConsistencyExceeded || angularHardSpeedExceeded ||
+                                 angularDeltaExceeded || angularPoseConsistencyExceeded;
+    double linearSpeed = 0.0;
+    double angularSpeed = 0.0;
+    if (anyGateExceeded) {
+        const double translation = stableNorm(displacement);
+        const double rotationAmount = stableNorm(rotation);
+        const double positionInnovationAmount = stableNorm(positionInnovation);
+        const double rotationInnovationAmount = stableNorm(rotationInnovation);
+        linearSpeed = stableNorm(current.world.linearVelocity);
+        angularSpeed = stableNorm(current.world.angularVelocity);
+        const double linearDelta = stableNorm(linearVelocityDelta);
+        const double angularDelta = stableNorm(angularVelocityDelta);
+        const double linearVelocityPoseResidual = stableNorm(velocityPoseResidual);
+        const double angularVelocityPoseResidualAmount =
+            stableNorm(angularVelocityPoseResidual);
 
-    const auto recordExceeded = [this](bool exceeded, DecisionGate gate) {
-        if (exceeded) {
-            lastDecisionMetrics_.exceededGates |= static_cast<std::uint32_t>(gate);
-        }
-    };
-    recordExceeded(positionInnovationExceeded, DecisionGatePositionInnovation);
-    recordExceeded(rotationInnovationExceeded, DecisionGateRotationInnovation);
-    recordExceeded(linearHardSpeedExceeded, DecisionGateLinearHardSpeed);
-    recordExceeded(linearDeltaExceeded, DecisionGateLinearVelocityDelta);
-    recordExceeded(linearPoseConsistencyExceeded, DecisionGateLinearPoseConsistency);
-    recordExceeded(angularHardSpeedExceeded, DecisionGateAngularHardSpeed);
-    recordExceeded(angularDeltaExceeded, DecisionGateAngularVelocityDelta);
-    recordExceeded(angularPoseConsistencyExceeded, DecisionGateAngularPoseConsistency);
+        lastDecisionMetrics_ = {};
+        lastDecisionMetrics_.valid = true;
+        lastDecisionMetrics_.rawDtSeconds = rawDt;
+        lastDecisionMetrics_.dtSeconds = dt;
+        lastDecisionMetrics_.gateScale = gateScale;
+        lastDecisionMetrics_.translationMeters = translation;
+        lastDecisionMetrics_.rotationRadians = rotationAmount;
+        lastDecisionMetrics_.positionInnovationMeters = positionInnovationAmount;
+        lastDecisionMetrics_.positionGateMeters = positionGate;
+        lastDecisionMetrics_.rotationInnovationRadians = rotationInnovationAmount;
+        lastDecisionMetrics_.rotationGateRadians = rotationGate;
+        lastDecisionMetrics_.linearSpeedMetersPerSecond = linearSpeed;
+        lastDecisionMetrics_.hardLinearSpeedGateMetersPerSecond = config_.hardMaxLinearSpeed;
+        lastDecisionMetrics_.angularSpeedRadiansPerSecond = angularSpeed;
+        lastDecisionMetrics_.hardAngularSpeedGateRadiansPerSecond = config_.hardMaxAngularSpeed;
+        lastDecisionMetrics_.repairedLinearSpeedMetersPerSecond = linearSpeed;
+        lastDecisionMetrics_.repairedAngularSpeedRadiansPerSecond = angularSpeed;
+        lastDecisionMetrics_.linearVelocityDeltaMetersPerSecond = linearDelta;
+        lastDecisionMetrics_.linearVelocityDeltaGateMetersPerSecond = linearDeltaGate;
+        lastDecisionMetrics_.angularVelocityDeltaRadiansPerSecond = angularDelta;
+        lastDecisionMetrics_.angularVelocityDeltaGateRadiansPerSecond = angularDeltaGate;
+        lastDecisionMetrics_.linearPoseResidualMeters = linearVelocityPoseResidual;
+        lastDecisionMetrics_.linearPoseResidualGateMeters = velocityConsistencyGate;
+        lastDecisionMetrics_.angularPoseResidualRadians = angularVelocityPoseResidualAmount;
+        lastDecisionMetrics_.angularPoseResidualGateRadians =
+            angularVelocityConsistencyGate;
+
+        const auto recordExceeded = [this](bool exceeded, DecisionGate gate) {
+            if (exceeded) {
+                lastDecisionMetrics_.exceededGates |= static_cast<std::uint32_t>(gate);
+            }
+        };
+        recordExceeded(positionInnovationExceeded, DecisionGatePositionInnovation);
+        recordExceeded(rotationInnovationExceeded, DecisionGateRotationInnovation);
+        recordExceeded(linearHardSpeedExceeded, DecisionGateLinearHardSpeed);
+        recordExceeded(linearDeltaExceeded, DecisionGateLinearVelocityDelta);
+        recordExceeded(linearPoseConsistencyExceeded, DecisionGateLinearPoseConsistency);
+        recordExceeded(angularHardSpeedExceeded, DecisionGateAngularHardSpeed);
+        recordExceeded(angularDeltaExceeded, DecisionGateAngularVelocityDelta);
+        recordExceeded(angularPoseConsistencyExceeded,
+                       DecisionGateAngularPoseConsistency);
+    }
 
     bool outlier = false;
     if (positionInnovationExceeded) {
@@ -614,12 +655,14 @@ RigidPose PoseFilter::predictDamped(const RigidPose& anchor, double elapsedSecon
     Vec3 rotation = anchor.angularVelocity * distanceScale;
     bool translationCapped = false;
     bool rotationCapped = false;
-    if (translation.norm() > config_.maxHoldTranslationMeters) {
-        translation = translation * (config_.maxHoldTranslationMeters / translation.norm());
+    const double translationNorm = translation.norm();
+    if (translationNorm > config_.maxHoldTranslationMeters) {
+        translation = translation * (config_.maxHoldTranslationMeters / translationNorm);
         translationCapped = true;
     }
-    if (rotation.norm() > config_.maxHoldRotationRadians) {
-        rotation = rotation * (config_.maxHoldRotationRadians / rotation.norm());
+    const double rotationNorm = rotation.norm();
+    if (rotationNorm > config_.maxHoldRotationRadians) {
+        rotation = rotation * (config_.maxHoldRotationRadians / rotationNorm);
         rotationCapped = true;
     }
     output.position = anchor.position + translation;

@@ -59,12 +59,15 @@ vr::EVRInitError ServerProvider::Init(vr::IVRDriverContext* context) {
         resetTransitionLogRate(slot);
     }
 
-    active_.store(true, std::memory_order_release);
     bool hookInstalled = false;
     if (filterEnabled_) {
-        hooks_ = std::make_unique<InterfaceHooks>();
+        // Keep this object alive until ServerProvider destruction. Cleanup only
+        // removes its hooks, so a RunFrame already past the active_ check can never
+        // observe a concurrently destroyed InterfaceHooks object.
+        if (!hooks_) hooks_ = std::make_unique<InterfaceHooks>();
         hookInstalled = hooks_->install(this, context, vr::VRServerDriverHost());
     }
+    active_.store(true, std::memory_order_release);
     log("PoseAnchor " POSE_ANCHOR_VERSION " loaded (Vive Tracker only, normal poses pass through)");
     if (filterEnabled_ && !hookInstalled) {
         log("warning: no SteamVR pose hook was installed; filtering is inactive");
@@ -76,7 +79,6 @@ vr::EVRInitError ServerProvider::Init(vr::IVRDriverContext* context) {
 void ServerProvider::Cleanup() {
     active_.store(false, std::memory_order_release);
     if (hooks_) hooks_->remove();
-    hooks_.reset();
     for (auto& slot : slots_) {
         std::scoped_lock lock(slot.mutex);
         slot.filter.reset();
@@ -90,8 +92,11 @@ const char* const* ServerProvider::GetInterfaceVersions() { return vr::k_Interfa
 void ServerProvider::RunFrame() {
     try {
         if (!active_.load(std::memory_order_acquire)) return;
+        // Without a hook no callback can request classification or need watchdog
+        // output, so the disabled steady state is a single atomic read.
+        if (!filterEnabled_ || !hooks_) return;
         devices_.classifyPending();
-        if (!syntheticWatchdogEnabled_ || !hooks_) return;
+        if (!syntheticWatchdogEnabled_) return;
 
         const std::int64_t nowNs = steadyNowNs();
         for (std::uint32_t deviceIndex = 0; deviceIndex < slots_.size(); ++deviceIndex) {
@@ -139,18 +144,35 @@ bool ServerProvider::ShouldBlockStandbyMode() { return false; }
 void ServerProvider::EnterStandby() {}
 void ServerProvider::LeaveStandby() {}
 
-void ServerProvider::filterPose(std::uint32_t deviceIndex, vr::DriverPose_t& pose) {
+bool ServerProvider::isFilterTarget(std::uint32_t deviceIndex) noexcept {
     if (!active_.load(std::memory_order_acquire) || !filterEnabled_ ||
         deviceIndex >= slots_.size()) {
-        return;
+        return false;
     }
 
     const DeviceKind kind = devices_.kind(deviceIndex);
     if (kind == DeviceKind::Unknown) {
         devices_.requestClassification(deviceIndex);
-        return;
+        return false;
     }
-    if (kind != DeviceKind::ViveTracker) return;
+    return kind == DeviceKind::ViveTracker;
+}
+
+bool ServerProvider::filterPose(std::uint32_t deviceIndex,
+                                const vr::DriverPose_t& rawPose,
+                                vr::DriverPose_t& filteredPose) {
+    // isFilterTarget() validated the stable registry classification. Recheck only
+    // shutdown and bounds so Cleanup racing this callback remains fail-open.
+    if (!active_.load(std::memory_order_acquire) || !filterEnabled_ ||
+        deviceIndex >= slots_.size()) {
+        return false;
+    }
+
+    // DriverPose_t is intentionally copied only after the device is known to be a
+    // supported tracker. HMDs, controllers and base stations keep forwarding the
+    // driver's original multi-cache-line object without copying it first.
+    filteredPose = rawPose;
+    vr::DriverPose_t& pose = filteredPose;
 
     DeviceSlot& slot = slots_[deviceIndex];
     std::scoped_lock lock(slot.mutex);
@@ -164,7 +186,7 @@ void ServerProvider::filterPose(std::uint32_t deviceIndex, vr::DriverPose_t& pos
         slot.hasDriverFromHead = false;
         slot.lastState = FilterState::Cold;
         resetTransitionLogRate(slot);
-        return;
+        return true;
     }
     DriverFromHead incomingDriverFromHead{};
     if (!PoseAdapter::readDriverFromHead(pose, incomingDriverFromHead)) {
@@ -180,7 +202,7 @@ void ServerProvider::filterPose(std::uint32_t deviceIndex, vr::DriverPose_t& pos
         slot.hasDriverFromHead = false;
         slot.lastState = FilterState::Cold;
         resetTransitionLogRate(slot);
-        return;
+        return true;
     }
     if (slot.hasDriverFromHead &&
         PoseAdapter::transformChanged(slot.driverFromHead, incomingDriverFromHead)) {
@@ -193,7 +215,7 @@ void ServerProvider::filterPose(std::uint32_t deviceIndex, vr::DriverPose_t& pos
         resetTransitionLogRate(slot);
         log("tracker " + devices_.metadata(deviceIndex).serial +
             " device-origin transform changed; filter re-armed without suppressing it");
-        return;
+        return true;
     }
     slot.driverFromHead = incomingDriverFromHead;
     slot.hasDriverFromHead = true;
@@ -224,7 +246,7 @@ void ServerProvider::filterPose(std::uint32_t deviceIndex, vr::DriverPose_t& pos
             resetTransitionLogRate(slot);
             log("tracker " + devices_.metadata(deviceIndex).serial +
                 " tracking-space transform changed; filter re-armed without suppressing it");
-            return;
+            return true;
         }
         slot.transform = incomingTransform;
         slot.hasTransform = true;
@@ -232,7 +254,7 @@ void ServerProvider::filterPose(std::uint32_t deviceIndex, vr::DriverPose_t& pos
         if (slot.filter) slot.filter->reset();
         ++slot.generation;
         slot.hasDriverPose = false;
-        return;
+        return true;
     }
 
     if (!slot.filter) slot.filter = std::make_unique<PoseFilter>(config_);
@@ -254,6 +276,7 @@ void ServerProvider::filterPose(std::uint32_t deviceIndex, vr::DriverPose_t& pos
         recordStateChange(deviceIndex, slot, output,
                           metrics.valid ? &metrics : nullptr, receiveTimeNs);
     }
+    return true;
 }
 
 void ServerProvider::log(const std::string& message) const noexcept {

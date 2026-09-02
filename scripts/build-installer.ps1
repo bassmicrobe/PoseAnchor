@@ -6,12 +6,17 @@ param(
     [switch]$SkipBuild,
 
     # SHA-1 thumbprint of an Authenticode code-signing certificate in the current
-    # user's or machine's certificate store. When set, the driver DLL is signed
-    # before packaging and the setup executable after compilation.
+    # user's or machine's certificate store. When set, packaged executable files
+    # are signed before Inno Setup signs Setup and its embedded uninstaller.
     [ValidatePattern('^[0-9A-Fa-f]{40}$')]
     [string]$CertificateThumbprint,
 
-    [string]$TimestampUrl = 'http://timestamp.digicert.com'
+    [ValidatePattern('^https?://[^\s"]+$')]
+    [string]$TimestampUrl = 'http://timestamp.digicert.com',
+
+    # Defaults to dist. A separate directory is useful for release-candidate
+    # validation without replacing a previously published installer.
+    [string]$OutputDirectory
 )
 
 $ErrorActionPreference = 'Stop'
@@ -25,7 +30,11 @@ if ($cmakeLists -notmatch 'project\(PoseAnchor VERSION (\d+\.\d+\.\d+)') {
 }
 $Version = $Matches[1]
 $packageRoot = Join-Path $projectRoot 'build\pose_anchor'
-$outputRoot = Join-Path $projectRoot 'dist'
+$outputRoot = if ($OutputDirectory) {
+    $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
+} else {
+    Join-Path $projectRoot 'dist'
+}
 $installerScript = Join-Path $projectRoot 'installer\PoseAnchor.iss'
 
 if (-not $SkipBuild) {
@@ -36,6 +45,8 @@ if (-not $SkipBuild) {
 $requiredFiles = @(
     'driver.vrdrivermanifest',
     'bin\win64\driver_pose_anchor.dll',
+    'PoseAnchorStatus.exe',
+    'PoseAnchor.ico',
     'resources\settings\default.vrsettings',
     'README.md',
     'LICENSE',
@@ -75,9 +86,19 @@ function Invoke-CodeSign([string]$Path) {
 
 if ($CertificateThumbprint) {
     $script:signTool = Find-SignTool
-    # Sign the DLL before Inno Setup packages it, so the installed driver binary
-    # carries a signature too, not just the setup executable.
-    Invoke-CodeSign (Join-Path $packageRoot 'bin\win64\driver_pose_anchor.dll')
+    # Sign every installed PE before Inno Setup packages it. Setup and the
+    # embedded uninstaller are signed by Inno itself below.
+    foreach ($relativePath in @(
+        'bin\win64\driver_pose_anchor.dll',
+        'PoseAnchorStatus.exe'
+    )) {
+        $path = Join-Path $packageRoot $relativePath
+        Invoke-CodeSign $path
+        $signature = Get-AuthenticodeSignature -LiteralPath $path
+        if ($signature.Status -ne 'Valid') {
+            throw "Signing completed but the signature is not valid: $path ($($signature.Status))"
+        }
+    }
 }
 
 $isccCandidates = @(
@@ -93,18 +114,29 @@ if (-not $iscc) {
 
 New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 $versionQuad = "$Version.0"
-& $iscc "/DPackageDir=$packageRoot" "/DOutputDir=$outputRoot" `
-    "/DAppVersion=$Version" "/DAppVersionQuad=$versionQuad" $installerScript
+$isccArguments = @(
+    "/DPackageDir=$packageRoot"
+    "/DOutputDir=$outputRoot"
+    "/DAppVersion=$Version"
+    "/DAppVersionQuad=$versionQuad"
+)
+if ($CertificateThumbprint) {
+    # Inno Setup must invoke signtool itself so it can sign both Setup and the
+    # embedded uninstaller. $q and $f are Inno SignTool substitutions; the
+    # unique tool name prevents included scripts from reusing a generic command.
+    $signCommand = '$q{0}$q sign /sha1 {1} /fd SHA256 /tr $q{2}$q /td SHA256 $f' -f `
+        $script:signTool, $CertificateThumbprint, $TimestampUrl
+    $isccArguments += '/DEnableSigning=1'
+    # Inno Setup 6.7.x uses the short /S<name>=<command> form.
+    $isccArguments += "/Sposeanchorsign=$signCommand"
+}
+$isccArguments += $installerScript
+& $iscc @isccArguments
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed: $LASTEXITCODE" }
 
 $installer = Join-Path $outputRoot "PoseAnchor-Setup-$Version.exe"
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
     throw "Inno Setup reported success but the installer is missing: $installer"
-}
-
-# Sign before hashing so the published checksum matches the signed file.
-if ($CertificateThumbprint) {
-    Invoke-CodeSign $installer
 }
 
 $hash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -116,6 +148,9 @@ $signature = Get-AuthenticodeSignature -LiteralPath $installer
 Write-Host "Installer build succeeded: $installer"
 Write-Host "SHA-256: $hash"
 Write-Host "Authenticode: $($signature.Status)"
-if ($signature.Status -ne 'Valid') {
+if ($CertificateThumbprint -and $signature.Status -ne 'Valid') {
+    throw "Signing was requested, but the completed installer signature is not valid: $($signature.Status)"
+}
+if (-not $CertificateThumbprint -and $signature.Status -ne 'Valid') {
     Write-Warning 'The installer is unsigned. Rerun with -CertificateThumbprint <sha1> to sign it before public distribution.'
 }
