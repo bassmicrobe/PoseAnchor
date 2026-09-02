@@ -124,9 +124,11 @@ enum DecisionGate : std::uint32_t {
     DecisionGateAngularPoseConsistency = 1u << 7,
 };
 
-// Snapshot of the most recent pose/kinematics comparison. This is intentionally
-// passive data: callers can sample it on a state transition without logging in the
-// tracking hot path. `valid` is cleared at every push, tick, and reset.
+// Snapshot of the most recent pose/kinematics comparison that exceeded at least
+// one gate. Normal good samples deliberately skip the square roots and 200-byte
+// snapshot write. This is passive data: callers can sample it on a state transition
+// without logging in the tracking hot path. `valid` is cleared at every push, tick,
+// and reset.
 struct FilterDecisionMetrics {
     bool valid{};
     bool linearVelocityRepaired{};

@@ -1,0 +1,11 @@
+PoseAnchorはHTC Vive Tracker向けの実験版ソフトウェアです。
+
+インストール前に確認してください:
+
+- 転倒や衝突につながらない安全な場所で、まずTracker 1個から試してください。
+
+- SteamVRを終了してください。OpenVR Space Calibrator、Motion Compensationなど、Trackerのposeを差し替えるツールも無効化してください。
+
+- 短い飛びや欠落は補正できますが、独立したセンサーなしに長時間遮蔽中の正しい絶対位置を復元することはできません。
+
+- HMD、コントローラー、Base Stationは変更しません。

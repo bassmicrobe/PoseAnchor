@@ -23,6 +23,25 @@ else()
     target_compile_options(pose_anchor_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+# The status parser is Windows-API independent so its stale-session and JSON
+# safeguards are exercised by both the Windows build and sanitizer CI.
+if(POSE_ANCHOR_BUILD_DRIVER OR BUILD_TESTING)
+    add_library(pose_anchor_status_parser STATIC
+        src/status/status_parser.cpp
+    )
+    target_include_directories(pose_anchor_status_parser PUBLIC src/status)
+    target_compile_features(pose_anchor_status_parser PUBLIC cxx_std_20)
+    if(MSVC)
+        target_compile_options(pose_anchor_status_parser PRIVATE
+            /W4 /permissive- /EHsc /utf-8
+        )
+    else()
+        target_compile_options(pose_anchor_status_parser PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+endif()
+
 if(BUILD_TESTING)
     add_executable(pose_anchor_tests tests/tracker_filter_tests.cpp)
     target_link_libraries(pose_anchor_tests PRIVATE pose_anchor_core)
@@ -31,6 +50,24 @@ if(BUILD_TESTING)
         target_compile_options(pose_anchor_tests PRIVATE /W4 /permissive- /EHsc /utf-8)
     endif()
     add_test(NAME pose_anchor_core COMMAND pose_anchor_tests)
+
+    add_executable(pose_anchor_status_parser_tests
+        tests/status_parser_tests.cpp
+    )
+    target_link_libraries(pose_anchor_status_parser_tests PRIVATE
+        pose_anchor_status_parser
+    )
+    target_compile_features(pose_anchor_status_parser_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(pose_anchor_status_parser_tests PRIVATE
+            /W4 /permissive- /EHsc /utf-8
+        )
+    else()
+        target_compile_options(pose_anchor_status_parser_tests PRIVATE
+            -Wall -Wextra -Wpedantic
+        )
+    endif()
+    add_test(NAME pose_anchor_status_parser COMMAND pose_anchor_status_parser_tests)
 
     # A manual release-mode microbenchmark. It is intentionally not a CTest so
     # machine load cannot make correctness CI flaky.
@@ -109,6 +146,23 @@ if(POSE_ANCHOR_BUILD_DRIVER)
         )
         add_test(NAME pose_anchor_device_registry
                  COMMAND pose_anchor_device_registry_tests)
+
+        # Manual driver hot-path microbenchmark. Timings are reported for local
+        # inspection and intentionally are not a timing-sensitive CTest.
+        add_executable(pose_anchor_device_registry_benchmark
+            tests/device_registry_benchmark.cpp
+            tests/driver_pose_benchmark_sink.cpp
+            src/driver/device_registry.cpp
+        )
+        target_include_directories(pose_anchor_device_registry_benchmark PRIVATE src/driver)
+        target_link_libraries(pose_anchor_device_registry_benchmark PRIVATE
+            pose_anchor_core
+            OpenVR::Headers
+        )
+        target_compile_features(pose_anchor_device_registry_benchmark PRIVATE cxx_std_20)
+        target_compile_options(pose_anchor_device_registry_benchmark PRIVATE
+            /W4 /permissive- /EHsc /utf-8
+        )
     endif()
 
     add_library(pose_anchor_driver SHARED
@@ -147,6 +201,43 @@ if(POSE_ANCHOR_BUILD_DRIVER)
 
     set(POSE_ANCHOR_PACKAGE_DIR "${CMAKE_BINARY_DIR}/pose_anchor")
     set(POSE_ANCHOR_BINARY_DIR "${POSE_ANCHOR_PACKAGE_DIR}/bin/win64")
+
+    # On-demand diagnostics only: this GUI exits when its Task Dialog closes and
+    # does not add a tray process, service, timer, or background thread.
+    file(TO_CMAKE_PATH
+        "${CMAKE_SOURCE_DIR}/src/status/PoseAnchorStatus.ico"
+        POSE_ANCHOR_STATUS_ICON
+    )
+    configure_file(
+        "${CMAKE_SOURCE_DIR}/src/status/status.rc.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/pose_anchor_status.rc"
+        @ONLY
+    )
+    add_executable(pose_anchor_status WIN32
+        src/status/status_main.cpp
+        "${CMAKE_CURRENT_BINARY_DIR}/pose_anchor_status.rc"
+    )
+    target_link_libraries(pose_anchor_status PRIVATE
+        pose_anchor_status_parser
+        Advapi32
+        Comctl32
+        Shell32
+        User32
+    )
+    target_compile_features(pose_anchor_status PRIVATE cxx_std_20)
+    target_compile_options(pose_anchor_status PRIVATE
+        /W4 /permissive- /EHsc /utf-8
+    )
+    set_target_properties(pose_anchor_status PROPERTIES
+        OUTPUT_NAME PoseAnchorStatus
+        RUNTIME_OUTPUT_DIRECTORY "${POSE_ANCHOR_PACKAGE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${POSE_ANCHOR_PACKAGE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${POSE_ANCHOR_PACKAGE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${POSE_ANCHOR_PACKAGE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${POSE_ANCHOR_PACKAGE_DIR}"
+    )
+    add_dependencies(pose_anchor_driver pose_anchor_status)
+
     set_target_properties(pose_anchor_driver PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${POSE_ANCHOR_BINARY_DIR}"
         RUNTIME_OUTPUT_DIRECTORY_DEBUG "${POSE_ANCHOR_BINARY_DIR}"
@@ -155,7 +246,9 @@ if(POSE_ANCHOR_BUILD_DRIVER)
         RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${POSE_ANCHOR_BINARY_DIR}"
     )
 
-    add_custom_command(TARGET pose_anchor_driver POST_BUILD
+    # Keep non-binary package inputs synchronized even when no C++ target needs
+    # relinking (for example, after editing README or default settings).
+    add_custom_target(pose_anchor_package ALL
         COMMAND "${CMAKE_COMMAND}" -E make_directory
                 "${POSE_ANCHOR_PACKAGE_DIR}/resources/settings"
                 "${POSE_ANCHOR_PACKAGE_DIR}/licenses"
@@ -169,6 +262,9 @@ if(POSE_ANCHOR_BUILD_DRIVER)
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/PACKAGE_README.md"
                 "${POSE_ANCHOR_PACKAGE_DIR}/README.md"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/src/status/PoseAnchorStatus.ico"
+                "${POSE_ANCHOR_PACKAGE_DIR}/PoseAnchor.ico"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/LICENSE"
                 "${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"
@@ -190,6 +286,7 @@ if(POSE_ANCHOR_BUILD_DRIVER)
                 "${CMAKE_SOURCE_DIR}/scripts/uninstall.ps1"
                 "${CMAKE_SOURCE_DIR}/scripts/steamvr-path.ps1"
                 "${POSE_ANCHOR_PACKAGE_DIR}/scripts"
+        DEPENDS pose_anchor_driver pose_anchor_status
         VERBATIM
     )
 endif()

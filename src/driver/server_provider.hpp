@@ -30,7 +30,14 @@ public:
     void EnterStandby() override;
     void LeaveStandby() override;
 
-    void filterPose(std::uint32_t deviceIndex, vr::DriverPose_t& pose);
+    // Cheap preflight keeps non-target callbacks off route bookkeeping and the
+    // DriverPose_t copy/filter path. Unknown devices schedule RunFrame classification.
+    [[nodiscard]] bool isFilterTarget(std::uint32_t deviceIndex) noexcept;
+    // Called after isFilterTarget() succeeds. Returns false only if shutdown began
+    // in between; on true, filteredPose is fully initialized.
+    [[nodiscard]] bool filterPose(std::uint32_t deviceIndex,
+                                  const vr::DriverPose_t& rawPose,
+                                  vr::DriverPose_t& filteredPose);
     void log(const std::string& message) const noexcept;
 
 private:
@@ -74,6 +81,9 @@ private:
     FilterConfig config_{};
     DeviceRegistry devices_{};
     std::array<DeviceSlot, vr::k_unMaxTrackedDeviceCount> slots_{};
+    // Once allocated, retained until ServerProvider destruction. Cleanup removes
+    // hooks without invalidating a pointer held by an overlapping RunFrame, and a
+    // later Init safely reinstalls into the same InterfaceHooks object.
     std::unique_ptr<InterfaceHooks> hooks_;
 };
 

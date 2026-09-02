@@ -12,9 +12,15 @@ SteamVR、OpenVR Space Calibrator、Motion Compensationなど同じpose関数を
 ダブルクリックします。セットアップがSteamVRを検出し、ドライバ登録まで自動で行います。
 コマンド操作や管理者権限は不要です。
 
-SteamVRを起動し、`vrserver.txt`の`[PoseAnchor]`行でロードとTracker識別を確認します。
+SteamVRが実行中の場合、セットアップはファイルや登録を変更せずに終了を案内します。
+SteamVRを自動終了することはありません。完了画面の案内に従い、必要なら同梱READMEを開いて
+からSteamVRを起動してください。
+
+SteamVRを起動し、スタートメニューの「PoseAnchor ステータス」で登録、driver/hook読込、
+Tracker識別、Hold/Recovery/Lostを確認します。この画面は必要なときだけ起動し、閉じると
+プロセスは残りません。詳しい記録は画面の「ログを開く」から確認できます。
 不具合があればSteamVRを終了し、Windowsの「設定 → アプリ → インストールされている
-アプリ → PoseAnchor」またはスタートメニューの「Uninstall PoseAnchor」を選びます。
+アプリ → PoseAnchor」またはスタートメニューの「PoseAnchor をアンインストールする」を選びます。
 同梱アンインストーラーがSteamVR登録解除後にファイルを削除します。
 
 SteamVR本体へファイルはコピーせず、ユーザーごとのPoseAnchorフォルダをexternal driverとして

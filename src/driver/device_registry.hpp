@@ -52,7 +52,11 @@ private:
                                       bool& retry) const;
 
     std::array<std::atomic<DeviceKind>, vr::k_unMaxTrackedDeviceCount> kinds_{};
-    std::array<std::atomic_bool, vr::k_unMaxTrackedDeviceCount> pending_{};
+    // SteamVR currently exposes 64 slots. A single mask lets RunFrame's steady-state
+    // classification pass use one read instead of 64 atomic read-modify-writes.
+    static_assert(vr::k_unMaxTrackedDeviceCount <= 64);
+    static_assert(std::atomic_uint64_t::is_always_lock_free);
+    std::atomic_uint64_t pendingMask_{};
     std::array<DeviceMetadata, vr::k_unMaxTrackedDeviceCount> metadata_{};
 };
 
