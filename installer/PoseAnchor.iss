@@ -5,10 +5,10 @@
   #define OutputDir "..\dist"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.1.1"
 #endif
 #ifndef AppVersionQuad
-  #define AppVersionQuad "0.1.0.0"
+  #define AppVersionQuad "0.1.1.0"
 #endif
 
 #define AppName "PoseAnchor"
@@ -19,7 +19,7 @@
 AppId={{2FC9BAA3-FE14-4C99-8C93-DC7F71157A7A}
 AppName={#AppName}
 AppVersion={#AppVersion}
-AppVerName={#AppName} {#AppVersion}
+AppVerName={#AppName} {#AppVersion} (experimental)
 AppPublisher=PoseAnchor contributors
 AppPublisherURL={#ProjectUrl}
 AppSupportURL={#ProjectUrl}/issues
@@ -44,12 +44,12 @@ CloseApplications=no
 RestartApplications=no
 SetupLogging=yes
 Uninstallable=yes
-UninstallDisplayName=PoseAnchor {#AppVersion}
+UninstallDisplayName=PoseAnchor {#AppVersion} (experimental)
 UninstallDisplayIcon={app}\PoseAnchorStatus.exe
 VersionInfoVersion={#AppVersionQuad}
 VersionInfoProductVersion={#AppVersion}
 VersionInfoProductName=PoseAnchor
-VersionInfoDescription=PoseAnchor SteamVR Vive Tracker guard
+VersionInfoDescription=PoseAnchor experimental SteamVR Vive Tracker filter
 VersionInfoCompany=PoseAnchor contributors
 VersionInfoCopyright=Copyright (c) 2026 PoseAnchor contributors
 #ifdef EnableSigning

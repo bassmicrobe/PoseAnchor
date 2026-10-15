@@ -1,11 +1,20 @@
-# PoseAnchor
+# PoseAnchor 0.1.1 — 実験版
 
 [![CI](https://github.com/bassmicrobe/PoseAnchor/actions/workflows/ci.yml/badge.svg)](https://github.com/bassmicrobe/PoseAnchor/actions/workflows/ci.yml)
 
-SteamVR / Lighthouse環境の**Vive Trackerだけ**を対象に、瞬間的な異常poseを隠し、
-正常トラッキングへ連続的に戻す実験的なWindows x64サーバードライバです。
+SteamVR / Lighthouse環境の**Vive Trackerだけ**を対象に、短時間の異常poseや欠測の
+影響を緩和することを目指す、実験的なWindows x64サーバードライバです。
 Base Station 2〜4台の構成を想定しています。HMD、コントローラー、Base Stationの
 poseには触れません。
+
+**改善効果は未実証です。** 実機で同一条件のON/OFF比較による、飛びの減少・位置精度・
+復帰時間・追加遅延の改善は確認していません。誤判定や予測により、動きが悪化する可能性も
+あります。自動テスト合格や低いCPU負荷は、トラッキング改善の証明ではありません。
+正式版・効果保証のある製品としてではなく、検証に協力できる方に向けた実験版として扱ってください。
+
+Experimental build: tracking improvement has not been demonstrated by controlled ON/OFF
+comparisons. False detections or predictions can worsen motion. Automated tests and CPU
+benchmarks do not establish real-world tracking benefits.
 
 ## はじめて使う方へ
 
@@ -120,8 +129,13 @@ CMakeはOpenVR v2.15.6とMinHook v1.3.4をGitのcommit hashで固定取得しま
 .\scripts\build-installer.ps1
 ```
 
-`dist\PoseAnchor-Setup-0.1.0.exe`が生成されます。利用者側にVisual Studio、CMake、
+`dist\PoseAnchor-Setup-0.1.1.exe`と同名の`.exe.sha256`が生成されます。利用者側にVisual Studio、CMake、
 Inno Setup、PowerShell操作は不要です。
+
+配布対象はこの実験版インストーラーとチェックサムの1組だけです。旧候補・テストログ・
+`build/`全体は公開しないでください。配布用のREADME・マニュアル・OSSライセンス・
+アンインストーラーはSetupに含まれます。GitHubで公開する際はPre-releaseにし、
+[配布準備記録と未検証項目](docs/experimental-release-2026-10-15.md)も確認してください。
 
 上記は未署名ビルドです。署名なしでも使用・配布できますが、Windowsの警告や端末の
 実行ポリシーにより起動が制限される場合があります。署名する場合はコード署名証明書の
@@ -134,8 +148,10 @@ SHA-1 thumbprintを指定します。driver DLLと状態画面を先に署名し
 
 ### 現在の検証状況
 
-今回の修正内容・自動検証・残っている実機確認は
-[リリース監査記録](docs/release-audit-2026-09-26.md)に記載しています。
+0.1.1の配布準備・検証範囲・残っている実機確認は
+[実験版の配布準備記録](docs/experimental-release-2026-10-15.md)に記載しています。
+直近の性能・UI監査は[2026-10-15の監査記録](docs/performance-ui-audit-2026-10-15.md)、
+過去のリリース監査は[2026-09-26の記録](docs/release-audit-2026-09-26.md)を参照してください。
 以下の実機測定・インストール試験は過去版での結果で、今回のバイナリの実機再試験を代替しません。
 
 - GitHub Actions CIはpush毎にMSVCビルド+全テスト、構成切替時の配布物検査、
@@ -155,7 +171,7 @@ SteamVRへ登録するのは、必ず上記手順でMSVCビルドした`build\po
 
 ## 配布版のインストール / 解除
 
-SteamVRを終了し、`PoseAnchor-Setup-0.1.0.exe`をダブルクリックします。セットアップが
+SteamVRを終了し、`PoseAnchor-Setup-0.1.1.exe`をダブルクリックします。セットアップが
 SteamVRの場所を検出し、ファイル配置、既存の同名登録確認、`vrpathreg`によるドライバ登録を
 自動で行います。既定ではユーザーごとの`%LOCALAPPDATA%\Programs\PoseAnchor`へ入り、
 管理者権限やコマンド操作は不要です。
@@ -209,7 +225,9 @@ Hold/Recovery/Lostを確認できます。この画面は必要なときだけ�
 - `RunFrame`のwatchdogは有効時だけ固定64スロットを走査し、Tracker以外はatomic判定だけで終了します。
 - リアルタイム経路にAIランタイム、GPU処理、常駐UI、ネットワーク通信は入れません。
 
-以下は監査前の版で行った参考計測です。今回の修正版の値は上記の監査記録を参照してください。
+以下は過去版で行った参考計測です。2026-10-15の変更前後の計測は
+[性能・UI監査記録](docs/performance-ui-audit-2026-10-15.md)を参照してください。
+これらは0.1.1の実機ON/OFF比較や、トラッキング改善を示す計測ではありません。
 
 オンデマンド状態画面は20回の実機計測で起動中央値75.25 ms、表示中のPrivateメモリ中央値
 3.01 MiB（Working set 16.86 MiB）でした。全20回で画面を閉じた後の残存プロセスは0です。

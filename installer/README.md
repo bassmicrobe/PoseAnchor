@@ -70,6 +70,17 @@ in `dist\`. Inno Setup is required only on the build machine.
 The staged `build-info.json` must match the requested configuration and current
 project version, including when using `-SkipBuild`. Rebuild the package if the
 metadata is missing or mismatched.
+Packaging also rejects stale README/manual/license inputs, including with
+`-SkipBuild`. Restage the package after changing distribution documents.
+
+The current build is experimental. Setup and the Windows Apps entry say so;
+both language-specific pre-install pages explain that controlled ON/OFF benefits
+are unproven and false detections or predictions can worsen motion. Keep this
+wording in release descriptions, mark GitHub releases as Pre-release, and retain
+the untested-live-hardware caveats in the packaged README and manual. See the
+[experimental release preparation record](../docs/experimental-release-2026-10-15.md).
+Keep only the current Setup and matching SHA-256 file in `dist/`; archive older
+candidates and diagnostic logs privately outside the repository before release.
 
 The locally generated installer is unsigned by default. It can be installed
 without Authenticode signing where Windows policy permits; Windows may show an

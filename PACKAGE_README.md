@@ -1,4 +1,4 @@
-# PoseAnchor 0.1.0 — experimental build
+# PoseAnchor 0.1.1 — 実験版 / experimental build
 
 English installation, status, and recovery instructions follow the Japanese section.
 
@@ -9,13 +9,23 @@ SteamVR / Lighthouse環境のHTC Vive Trackerだけを対象に、短いtracking
 Out-of-Rangeの抑制を目指すWindows x64サーバードライバです。改善を保証するものではありません。HMD、コントローラー、
 Base Stationには触れません。
 
+実機で同一条件のON/OFF比較による改善効果は未実証です。飛びの減少、位置精度、復帰時間、
+追加遅延の改善は確認していません。誤判定や予測によって動きが悪化する可能性があります。
+自動テスト合格やCPU・メモリの計測は効果の証明ではありません。正式版ではなく、
+安全な場所で試験し、不具合を報告できる方に向けた実験版です。
+
 ## インストール
 
 これは実験版です。最初は転倒や衝突につながりにくいTracker 1個で試してください。
 SteamVRと「PoseAnchor ステータス」を終了し、OpenVR Space Calibrator、Motion Compensation
-など同じpose関数を変更するツールを無効化してから、配布された`PoseAnchor-Setup-0.1.0.exe`を
+など同じpose関数を変更するツールを無効化してから、配布された`PoseAnchor-Setup-0.1.1.exe`を
 ダブルクリックします。セットアップがSteamVRを検出し、ドライバ登録まで自動で行います。
 コマンド操作や管理者権限は不要です。
+
+信頼できる配布元から取得し、インストーラーと同名の`.exe.sha256`を確認してください。
+この版は未署名のためWindowsが警告・
+ブロックする場合があります。セキュリティ機能を一律に無効化せず、端末の方針に従ってください。
+インストール前にSteamVR設定とルームセットアップをバックアップしてください。
 
 SteamVRが実行中の場合、セットアップはファイルや登録を変更せずに終了を案内します。
 SteamVRを自動終了することはありません。完了画面の案内に従い、必要なら同梱READMEを開いて
@@ -73,22 +83,36 @@ pose hook自体を導入しません。`true`に戻すと補正を有効にで�
 SteamVR更新で動かなくなる可能性があります。OSS表記は同梱の
 `THIRD_PARTY_NOTICES.md`を、ソース、設計、テストはソース配布側のREADMEを参照してください。
 
+0.1.1の実Trackerを使った新規導入・更新・解除、遮蔽、長時間使用の再試験は未実施です。
+過去版の実機試験と合成データによるテストは、この版の実機動作や改善効果を保証しません。
+異常や違和感があれば使用を中止し、SteamVRを終了して上記の手順で解除してください。
+
 ## English: installation and recovery
 
 For a short guide, open the included [manual](MANUAL.md), also available as
 **PoseAnchor Manual** in the Start menu after installation.
 
 PoseAnchor is an experimental Windows x64 SteamVR driver for HTC Vive Trackers in a
-Lighthouse setup. It may reduce brief tracking jumps and dropouts. It does not
+Lighthouse setup. It aims to mitigate brief tracking jumps and dropouts. It does not
 modify the HMD, controllers, or Base Stations. Start with one tracker in a clear,
 safe area. It cannot reconstruct the correct position during a long occlusion.
 
+Tracking improvement has not been demonstrated by controlled ON/OFF comparisons.
+Benefits in jump frequency, positional accuracy, recovery time, and added latency
+have not been established. False detections or predictions can worsen motion. Automated tests
+and CPU/memory measurements do not prove a tracking benefit. This is a test build,
+not a stable release or a product with guaranteed effectiveness.
+
 Close SteamVR and PoseAnchor Status, and disable other tools that replace tracker
 poses, including OpenVR Space Calibrator and Motion Compensation. Double-click
-`PoseAnchor-Setup-0.1.0.exe` and follow Setup. No commands or administrator rights
+`PoseAnchor-Setup-0.1.1.exe` and follow Setup. No commands or administrator rights
 are required. Setup detects SteamVR and registers PoseAnchor for the current user;
 it does not close SteamVR automatically. For updates, close SteamVR and PoseAnchor
 Status again before running the same installer.
+
+Back up SteamVR settings and room setup first. Verify the distribution source and
+the matching `.exe.sha256` file. This build is unsigned; Windows may warn or block
+it. Follow device policy rather than disabling security protection globally.
 
 After a successful installation, start SteamVR and open **PoseAnchor Status** from
 the Start menu. The screen shows a snapshot with its check time. Select **Refresh**
@@ -137,6 +161,11 @@ pose callbacks stop. Settings changes take effect after restarting SteamVR.
 
 PoseAnchor uses MinHook rather than a public pose-replacement API, so SteamVR updates may affect
 compatibility. See `THIRD_PARTY_NOTICES.md` for the open-source notices.
+
+Live-tracker installation, upgrade, removal, occlusion, and long-session tests
+have not been repeated for 0.1.1. Earlier live tests and synthetic tests do not
+guarantee this build's behavior or benefits. Stop using it if motion is unexpected;
+close SteamVR and follow the removal instructions above.
 
 ## ライセンス / Licenses and privacy
 

@@ -76,6 +76,24 @@ if ($buildInfo.project -cne 'PoseAnchor' -or
     throw "The staged package does not match PoseAnchor $Version ($Configuration). Run scripts\build.ps1 -Configuration $Configuration before packaging."
 }
 
+# -SkipBuild must not silently ship old warnings or third-party notices after
+# maintainers update the source documents without restaging the package.
+$packageDocuments = @{
+    'README.md' = 'PACKAGE_README.md'
+    'MANUAL.md' = 'MANUAL.md'
+    'LICENSE' = 'LICENSE'
+    'THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
+    'licenses\Inno-Setup-LICENSE.txt' = 'licenses\Inno-Setup-LICENSE.txt'
+    'licenses\OpenVR-SpaceCalibrator-LICENSE.txt' = 'licenses\OpenVR-SpaceCalibrator-LICENSE.txt'
+}
+foreach ($relativePath in $packageDocuments.Keys) {
+    $sourceHash = (Get-FileHash -LiteralPath (Join-Path $projectRoot $packageDocuments[$relativePath]) -Algorithm SHA256).Hash
+    $stagedHash = (Get-FileHash -LiteralPath (Join-Path $packageRoot $relativePath) -Algorithm SHA256).Hash
+    if ($sourceHash -cne $stagedHash) {
+        throw "Stale package document: $relativePath. Run scripts\build.ps1 -Configuration $Configuration before packaging."
+    }
+}
+
 function Find-SignTool {
     $command = Get-Command signtool.exe -ErrorAction SilentlyContinue
     if ($command) { return $command.Source }

@@ -1,4 +1,4 @@
-PoseAnchor is experimental software for HTC Vive Trackers.
+PoseAnchor is experimental software for HTC Vive Trackers, not a stable release.
 
 Before installing:
 
@@ -6,6 +6,12 @@ Before installing:
 
 - Exit SteamVR and PoseAnchor Status. Also disable OpenVR Space Calibrator, Motion Compensation, and other tools that hook or change tracker poses.
 
-- PoseAnchor may reduce short jumps and dropouts; improvement is not guaranteed. It cannot recover the correct absolute position during a long occlusion without another sensor.
+- PoseAnchor aims to mitigate short jumps and dropouts. Tracking improvement has not been demonstrated by controlled ON/OFF comparisons. False detections or predictions can worsen motion.
+
+- Automated tests and CPU measurements do not prove effectiveness. Live-tracker installation, upgrade, removal, occlusion, and long-session tests have not been repeated for this build.
+
+- Back up SteamVR settings and room setup. Stop using PoseAnchor if motion is unexpected; close SteamVR and uninstall it.
+
+- It cannot recover the correct absolute position during a long occlusion without another sensor.
 
 - It does not modify the HMD, controllers, or Base Stations.

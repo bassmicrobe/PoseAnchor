@@ -132,6 +132,43 @@ Assert-True ($installerSource.Contains('Name: "{group}\{cm:ManualShortcut}"; Fil
 $installerBuildSource = Get-Content -LiteralPath (Join-Path $projectRoot 'scripts\build-installer.ps1') -Raw -Encoding UTF8
 Assert-True ($installerBuildSource -match '(?s)\$requiredFiles = @\(.*?''MANUAL\.md''.*?\)') `
     'Installer packaging must reject a staged package without the user manual.'
+Assert-True ($installerBuildSource -match '(?s)foreach \(\$relativePath in \$packageDocuments.Keys\).*?Get-FileHash.*?if \(\$sourceHash -cne \$stagedHash\).*?throw "Stale package document:') `
+    'SkipBuild must reject stale package documentation and notices.'
+
+# Experimental-release wording is part of the distribution contract. Read UTF-8
+# explicitly and use Unicode escapes so Windows PowerShell 5.1 can run this test
+# regardless of the script's own encoding or the host ANSI code page.
+$cmakeSource = Get-Content -LiteralPath (Join-Path $projectRoot 'CMakeLists.txt') -Raw -Encoding UTF8
+$projectVersion = [regex]::Match($cmakeSource, 'project\(PoseAnchor VERSION (\d+\.\d+\.\d+)').Groups[1].Value
+Assert-True ($projectVersion -ne '') 'The distribution version must come from CMake.'
+Assert-True ($installerSource.Contains('#define AppVersion "' + $projectVersion + '"') -and
+    $installerSource.Contains('#define AppVersionQuad "' + $projectVersion + '.0"')) `
+    'Direct ISCC builds must use the current project version too.'
+Assert-True ($installerSource.Contains('AppVerName={#AppName} {#AppVersion} (experimental)') -and
+    $installerSource.Contains('UninstallDisplayName=PoseAnchor {#AppVersion} (experimental)')) `
+    'Setup and Windows Apps must identify the build as experimental.'
+foreach ($relativePath in @('README.md', 'PACKAGE_README.md', 'MANUAL.md')) {
+    $document = Get-Content -LiteralPath (Join-Path $projectRoot $relativePath) -Raw -Encoding UTF8
+    Assert-True ($document -match '(?m)^# PoseAnchor ' + [regex]::Escape($projectVersion) + '\b') `
+        "The current version must be visible in $relativePath."
+    Assert-True ($document.Contains('controlled ON/OFF') -and $document.Contains('can worsen motion')) `
+        "English effectiveness and false-correction warnings are required in $relativePath."
+    Assert-True ($document -match '\u672a\u5b9f\u8a3c' -and $document -match '\u60aa\u5316') `
+        "Japanese effectiveness and false-correction warnings are required in $relativePath."
+}
+$japaneseInfo = Get-Content -LiteralPath (Join-Path $projectRoot 'installer\info-before-ja.txt') -Raw -Encoding UTF8
+$englishInfo = Get-Content -LiteralPath (Join-Path $projectRoot 'installer\info-before-en.txt') -Raw -Encoding UTF8
+Assert-True ($japaneseInfo -match '\u672a\u5b9f\u8a3c' -and $japaneseInfo -match '\u60aa\u5316' -and
+    $japaneseInfo.Contains('ON/OFF')) 'Japanese Setup must explain unproven benefit and false-correction risk.'
+Assert-True ($englishInfo.Contains('controlled ON/OFF') -and $englishInfo.Contains('can worsen motion')) `
+    'English Setup must explain unproven benefit and false-correction risk.'
+foreach ($relativePath in @('README.md', 'PACKAGE_README.md')) {
+    $document = Get-Content -LiteralPath (Join-Path $projectRoot $relativePath) -Raw -Encoding UTF8
+    foreach ($match in [regex]::Matches($document, 'PoseAnchor-Setup-(\d+\.\d+\.\d+)\.exe')) {
+        Assert-True ($match.Groups[1].Value -ceq $projectVersion) `
+            "Installer examples must not point at an older build in $relativePath."
+    }
+}
 function Get-InstallerRoutine([string]$Name) {
     $pattern = '(?ms)^(?:function|procedure) ' + [regex]::Escape($Name) +
         '(?:\(|:|;).*?(?=^(?:function|procedure) |\z)'

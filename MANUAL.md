@@ -1,4 +1,4 @@
-# PoseAnchor 簡単マニュアル
+# PoseAnchor 0.1.1 実験版 — 簡単マニュアル
 
 English quick guide follows the Japanese section.
 
@@ -7,6 +7,10 @@ English quick guide follows the Japanese section.
 PoseAnchorはWindows x64 / SteamVR / Lighthouse環境のHTC Vive Tracker向け
 実験的ドライバです。短い追跡の飛びや欠測の軽減を目指しますが、改善は保証しません。
 HMD・コントローラー・Base Stationのposeは変更しません。
+
+実機で同一条件のON/OFF比較による改善効果は未実証です。誤判定や予測で動きが悪化する
+可能性があり、自動テストや低いCPU負荷は効果の証明ではありません。0.1.1の実機での導入・
+更新・解除、遮蔽や長時間使用の再試験も未実施です。過去版の結果と区別して扱ってください。
 
 初回はSteamVR設定とルームセットアップをバックアップし、周囲の安全を確保して
 Tracker 1個から試してください。異常や違和感があれば使用を中止してください。
@@ -108,6 +112,12 @@ Lighthouse setup. Improvement is not guaranteed. It does not modify HMD,
 controller, or Base Station poses. Back up SteamVR settings and room setup, then
 start with one tracker in a clear, safe area. Do not combine it with other tools
 that replace the same pose function, such as Space Calibrator or Motion Compensation.
+
+Tracking improvement has not been demonstrated by controlled ON/OFF comparisons.
+False detections or predictions can worsen motion. Automated tests and low CPU
+cost do not prove effectiveness. Live-tracker installation, upgrade, removal,
+occlusion, and long-session tests have not been repeated for 0.1.1; earlier
+results are not validation of this binary.
 
 1. Close SteamVR and PoseAnchor Status. Run `PoseAnchor-Setup-<version>.exe` from a
    trusted source and follow Setup. No commands or administrator rights are normally
