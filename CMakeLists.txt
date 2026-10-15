@@ -69,6 +69,33 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME pose_anchor_status_parser COMMAND pose_anchor_status_parser_tests)
 
+    add_executable(pose_anchor_status_overview_tests tests/status_overview_tests.cpp)
+    target_link_libraries(pose_anchor_status_overview_tests PRIVATE pose_anchor_status_parser)
+    target_compile_features(pose_anchor_status_overview_tests PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(pose_anchor_status_overview_tests PRIVATE /W4 /permissive- /EHsc /utf-8)
+    else()
+        target_compile_options(pose_anchor_status_overview_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    add_test(NAME pose_anchor_status_overview COMMAND pose_anchor_status_overview_tests)
+
+    add_executable(pose_anchor_status_parser_benchmark tests/status_parser_benchmark.cpp)
+    target_link_libraries(pose_anchor_status_parser_benchmark PRIVATE pose_anchor_status_parser)
+    target_compile_features(pose_anchor_status_parser_benchmark PRIVATE cxx_std_20)
+    if(MSVC)
+        target_compile_options(pose_anchor_status_parser_benchmark PRIVATE /W4 /permissive- /EHsc /utf-8)
+    else()
+        target_compile_options(pose_anchor_status_parser_benchmark PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    if(WIN32)
+        find_program(POSE_ANCHOR_POWERSHELL NAMES powershell REQUIRED)
+        add_test(NAME pose_anchor_installer_scripts
+            COMMAND "${POSE_ANCHOR_POWERSHELL}" -NoProfile -ExecutionPolicy Bypass
+                    -File "${CMAKE_SOURCE_DIR}/tests/installer_script_tests.ps1"
+        )
+    endif()
+
     # A manual release-mode microbenchmark. It is intentionally not a CTest so
     # machine load cannot make correctness CI flaky.
     add_executable(pose_anchor_benchmark tests/filter_benchmark.cpp)
@@ -147,12 +174,32 @@ if(POSE_ANCHOR_BUILD_DRIVER)
         add_test(NAME pose_anchor_device_registry
                  COMMAND pose_anchor_device_registry_tests)
 
+        add_executable(pose_anchor_hooks_tests
+            tests/hooks_tests.cpp
+            src/driver/hooks.cpp
+            src/driver/device_registry.cpp
+        )
+        target_include_directories(pose_anchor_hooks_tests PRIVATE src/driver)
+        target_link_libraries(pose_anchor_hooks_tests PRIVATE
+            pose_anchor_core OpenVR::Headers MinHook::MinHook
+        )
+        target_compile_features(pose_anchor_hooks_tests PRIVATE cxx_std_20)
+        target_compile_definitions(pose_anchor_hooks_tests PRIVATE
+            NOMINMAX WIN32_LEAN_AND_MEAN
+        )
+        target_compile_options(pose_anchor_hooks_tests PRIVATE
+            /W4 /permissive- /EHsc /utf-8 /wd4100 /wd4127
+        )
+        add_test(NAME pose_anchor_hooks COMMAND pose_anchor_hooks_tests)
+        set_tests_properties(pose_anchor_hooks PROPERTIES TIMEOUT 30)
+
         # Manual driver hot-path microbenchmark. Timings are reported for local
         # inspection and intentionally are not a timing-sensitive CTest.
         add_executable(pose_anchor_device_registry_benchmark
             tests/device_registry_benchmark.cpp
             tests/driver_pose_benchmark_sink.cpp
             src/driver/device_registry.cpp
+            src/driver/pose_adapter.cpp
         )
         target_include_directories(pose_anchor_device_registry_benchmark PRIVATE src/driver)
         target_link_libraries(pose_anchor_device_registry_benchmark PRIVATE
@@ -200,7 +247,15 @@ if(POSE_ANCHOR_BUILD_DRIVER)
     )
 
     set(POSE_ANCHOR_PACKAGE_DIR "${CMAKE_BINARY_DIR}/pose_anchor")
-    set(POSE_ANCHOR_BINARY_DIR "${POSE_ANCHOR_PACKAGE_DIR}/bin/win64")
+    # Link each configuration independently. A shared linker output lets a newer
+    # Debug DLL satisfy an incremental Release build and silently ship Debug code.
+    # The package target below always stages the requested configuration.
+    set(POSE_ANCHOR_CONFIG_DIR "${CMAKE_BINARY_DIR}/$<CONFIG>/pose_anchor")
+    set(POSE_ANCHOR_BINARY_DIR "${POSE_ANCHOR_CONFIG_DIR}/bin/win64")
+    file(GENERATE
+        OUTPUT "${POSE_ANCHOR_CONFIG_DIR}/build-info.json"
+        CONTENT "{\n  \"project\": \"PoseAnchor\",\n  \"version\": \"${PROJECT_VERSION}\",\n  \"configuration\": \"$<CONFIG>\"\n}\n"
+    )
 
     # On-demand diagnostics only: this GUI exits when its Task Dialog closes and
     # does not add a tray process, service, timer, or background thread.
@@ -230,29 +285,39 @@ if(POSE_ANCHOR_BUILD_DRIVER)
     )
     set_target_properties(pose_anchor_status PROPERTIES
         OUTPUT_NAME PoseAnchorStatus
-        RUNTIME_OUTPUT_DIRECTORY "${POSE_ANCHOR_PACKAGE_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${POSE_ANCHOR_PACKAGE_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${POSE_ANCHOR_PACKAGE_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${POSE_ANCHOR_PACKAGE_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${POSE_ANCHOR_PACKAGE_DIR}"
+        RUNTIME_OUTPUT_DIRECTORY "${POSE_ANCHOR_CONFIG_DIR}"
     )
     add_dependencies(pose_anchor_driver pose_anchor_status)
 
+    if(BUILD_TESTING)
+        add_executable(pose_anchor_status_ui_tests tests/status_ui_tests.cpp)
+        target_link_libraries(pose_anchor_status_ui_tests PRIVATE
+            pose_anchor_status_parser Advapi32 Comctl32 Shell32 User32)
+        target_compile_features(pose_anchor_status_ui_tests PRIVATE cxx_std_20)
+        target_compile_options(pose_anchor_status_ui_tests PRIVATE /W4 /permissive- /EHsc /utf-8)
+        add_test(NAME pose_anchor_status_ui COMMAND pose_anchor_status_ui_tests)
+    endif()
+
     set_target_properties(pose_anchor_driver PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${POSE_ANCHOR_BINARY_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_DEBUG "${POSE_ANCHOR_BINARY_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_RELEASE "${POSE_ANCHOR_BINARY_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO "${POSE_ANCHOR_BINARY_DIR}"
-        RUNTIME_OUTPUT_DIRECTORY_MINSIZEREL "${POSE_ANCHOR_BINARY_DIR}"
     )
 
     # Keep non-binary package inputs synchronized even when no C++ target needs
     # relinking (for example, after editing README or default settings).
     add_custom_target(pose_anchor_package ALL
+        COMMAND "${CMAKE_COMMAND}" -E rm -f
+                "${POSE_ANCHOR_PACKAGE_DIR}/build-info.json"
         COMMAND "${CMAKE_COMMAND}" -E make_directory
+                "${POSE_ANCHOR_PACKAGE_DIR}/bin/win64"
                 "${POSE_ANCHOR_PACKAGE_DIR}/resources/settings"
                 "${POSE_ANCHOR_PACKAGE_DIR}/licenses"
                 "${POSE_ANCHOR_PACKAGE_DIR}/scripts"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_FILE:pose_anchor_driver>"
+                "${POSE_ANCHOR_PACKAGE_DIR}/bin/win64/driver_pose_anchor.dll"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "$<TARGET_FILE:pose_anchor_status>"
+                "${POSE_ANCHOR_PACKAGE_DIR}/PoseAnchorStatus.exe"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/driver/pose_anchor/driver.vrdrivermanifest"
                 "${POSE_ANCHOR_PACKAGE_DIR}/driver.vrdrivermanifest"
@@ -286,6 +351,10 @@ if(POSE_ANCHOR_BUILD_DRIVER)
                 "${CMAKE_SOURCE_DIR}/scripts/uninstall.ps1"
                 "${CMAKE_SOURCE_DIR}/scripts/steamvr-path.ps1"
                 "${POSE_ANCHOR_PACKAGE_DIR}/scripts"
+        # Publish metadata last: a failed staging step must not claim success.
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${POSE_ANCHOR_CONFIG_DIR}/build-info.json"
+                "${POSE_ANCHOR_PACKAGE_DIR}/build-info.json"
         DEPENDS pose_anchor_driver pose_anchor_status
         VERBATIM
     )

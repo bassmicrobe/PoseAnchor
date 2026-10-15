@@ -68,6 +68,8 @@ Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"; InfoBeforeFil
 [CustomMessages]
 english.SteamVRNotFound=SteamVR was not found. Install or repair SteamVR, then run PoseAnchor Setup again.
 japanese.SteamVRNotFound=SteamVRが見つかりません。SteamVRをインストールまたは修復してから、PoseAnchor Setupをもう一度実行してください。
+english.PathRegistryOverride=VR_PATHREG_OVERRIDE is set. PoseAnchor Setup and the uninstaller only support the standard OpenVR registration file. Close this program, remove that environment override, then run it again from a new session. No registration was changed.
+japanese.PathRegistryOverride=VR_PATHREG_OVERRIDEが設定されています。PoseAnchorのセットアップとアンインストーラーは標準のOpenVR登録ファイルにのみ対応しています。このプログラムを閉じ、環境変数の上書き設定を解除して、新しいセッションからもう一度実行してください。登録は変更されていません。
 english.ExistingRegistration=PoseAnchor is currently registered from:%n%1%n%nSetup must replace it with:%n%2%n%nIf registration of the new copy fails, Setup will try to restore the old path. Continue?
 japanese.ExistingRegistration=PoseAnchorは現在、次の場所から登録されています:%n%1%n%nセットアップは次の場所へ登録を置き換える必要があります:%n%2%n%n新しいコピーの登録に失敗した場合は、古い場所への復元を試みます。続行しますか？
 english.DuplicateRegistration=Multiple old PoseAnchor driver registrations were found. Setup must remove registrations named "pose_anchor" and register this installed copy. Before changing anything, Setup will save an exact backup of the OpenVR registration file and restore it if registration fails. Continue?
@@ -92,12 +94,18 @@ english.StatusRunningSetup=PoseAnchor Status is currently open. Close it, cancel
 japanese.StatusRunningSetup=PoseAnchor ステータスが開いています。画面を閉じ、このセットアップをキャンセルしてから、もう一度実行してください。セットアップが自動終了することはありません。
 english.StatusRunningUninstall=PoseAnchor Status is currently open. Close it, then run the PoseAnchor uninstaller again.
 japanese.StatusRunningUninstall=PoseAnchor ステータスが開いています。画面を閉じてから、PoseAnchorのアンインストーラーをもう一度実行してください。
+english.ProcessInspectionFailed=Could not check whether %1 is running. For safety, this operation cannot continue. Close this program and try again after restarting Windows. If the problem persists, contact PoseAnchor support and include the displayed error or setup log.
+japanese.ProcessInspectionFailed=%1が実行中か確認できませんでした。安全のため処理を続行できません。このプログラムを閉じ、Windowsを再起動してからもう一度お試しください。解決しない場合は、表示されたエラーまたはセットアップログを添えてPoseAnchorのサポートへお問い合わせください。
 english.FinishedSuccess=PoseAnchor has been installed and registered as a SteamVR driver. It loads automatically when you start SteamVR.%n%nStart with one tracker in a safe area. Click Finish to exit Setup.
 japanese.FinishedSuccess=PoseAnchorをインストールし、SteamVRドライバとして登録しました。SteamVRを起動すると自動的に読み込まれます。%n%n最初は安全な場所でTracker 1個から試してください。「完了」をクリックしてセットアップを終了します。
 english.FinishedFailure=PoseAnchor files were installed, but the SteamVR driver is not ready. Keep SteamVR closed and follow the error message before using PoseAnchor.%n%nClick Finish to exit Setup.
 japanese.FinishedFailure=PoseAnchorのファイルはインストールされましたが、SteamVRドライバを使用できる状態ではありません。SteamVRを終了したまま、エラーメッセージに従って修復してください。%n%n「完了」をクリックしてセットアップを終了します。
 english.OpenReadme=Open the PoseAnchor README
 japanese.OpenReadme=PoseAnchor READMEを開く
+english.SetupLogPath=Setup log: %1
+japanese.SetupLogPath=セットアップログ: %1
+english.OpenSetupLog=Open the setup log
+japanese.OpenSetupLog=セットアップログを開く
 english.StatusShortcut=PoseAnchor Status
 japanese.StatusShortcut=PoseAnchor ステータス
 
@@ -109,7 +117,10 @@ Source: "{#PackageDir}\resources\settings\default.vrsettings"; DestDir: "{app}\r
 Source: "{#PackageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PackageDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#PackageDir}\licenses\OpenVR-LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#PackageDir}\licenses\MinHook-LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#PackageDir}\licenses\Inno-Setup-LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#PackageDir}\licenses\OpenVR-SpaceCalibrator-LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{cm:StatusShortcut}"; Filename: "{app}\PoseAnchorStatus.exe"
@@ -118,6 +129,7 @@ Name: "{group}\{cm:UninstallProgram,PoseAnchor}"; Filename: "{uninstallexe}"
 
 [Run]
 Filename: "{sys}\notepad.exe"; Parameters: """{app}\README.md"""; Description: "{cm:OpenReadme}"; Flags: postinstall skipifsilent nowait
+Filename: "{sys}\notepad.exe"; Parameters: """{log}"""; Description: "{cm:OpenSetupLog}"; Flags: postinstall skipifsilent nowait unchecked; Check: OfferSetupLog
 
 [InstallDelete]
 ; Development packages used to contain command-line helper scripts. They are not
@@ -160,6 +172,24 @@ var
 function MoveFileExW(const ExistingFileName, NewFileName: String;
   Flags: Cardinal): Boolean;
   external 'MoveFileExW@kernel32.dll stdcall';
+
+function SetupFailureMessage(const MessageText: String): String;
+var
+  LogPath: String;
+begin
+  Result := MessageText;
+  // {log} is Inno Setup's actual log filename, including a caller's /LOG path.
+  // Do not guess the timestamped filename in the user's temporary directory.
+  LogPath := ExpandConstant('{log}');
+  if LogPath <> '' then
+    Result := Result + #13#10#13#10 +
+      FmtMessage(CustomMessage('SetupLogPath'), [LogPath]);
+end;
+
+function OfferSetupLog: Boolean;
+begin
+  Result := DriverRegistrationFailed and FileExists(ExpandConstant('{log}'));
+end;
 
 function CleanPath(Value: String): String;
 begin
@@ -257,6 +287,15 @@ function RunVrPathReg(const Parameters: String; var ResultCode: Integer;
   var Output: TExecOutput): Boolean;
 begin
   ResultCode := -9999;
+  // vrpathreg honors this override, while our byte-exact backup and rollback
+  // deliberately target the standard per-user registry. Never mutate another
+  // registry and then claim that restoring the standard file restored it.
+  if GetEnv('VR_PATHREG_OVERRIDE') <> '' then
+  begin
+    Log('PoseAnchor: refusing vrpathreg with VR_PATHREG_OVERRIDE set');
+    Result := False;
+    Exit;
+  end;
   Result := ExecAndCaptureOutput(VrPathRegPath, Parameters, SteamVrRoot,
     SW_HIDE, ewWaitUntilTerminated, ResultCode, Output);
   Log(Format('PoseAnchor: vrpathreg %s exited %d (launch=%d)', [Parameters, ResultCode, Ord(Result)]));
@@ -495,7 +534,12 @@ begin
 
   if ResultCode = 1 then
   begin
-    Result := '';
+    // Even a first PoseAnchor registration rewrites the entire OpenVR file.
+    // Preserve other drivers and runtime paths if adddriver fails mid-write.
+    if CreateRegistrationBackup then
+      Result := ''
+    else
+      ResetRegistrationPlan;
     Exit;
   end
   else if ResultCode = 0 then
@@ -589,49 +633,70 @@ begin
 end;
 
 // tasklist is available without elevation and is more reliable here than
-// WMI/COM. If process inspection itself fails, fail closed.
-function IsImageRunning(const ImageName: String): Boolean;
+// WMI/COM. Keep inspection failure distinct from a running process: both block
+// mutation, but only the latter is fixed by closing SteamVR or the Status app.
+function TryIsImageRunning(const ImageName: String; var Running: Boolean): Boolean;
 var
   ResultCode: Integer;
   Output: TExecOutput;
   I: Integer;
 begin
-  Result := True;
-  if not ExecAndCaptureOutput(ExpandConstant('{sys}\tasklist.exe'),
-    '/FI "IMAGENAME eq ' + ImageName + '" /NH', '', SW_HIDE,
-    ewWaitUntilTerminated, ResultCode, Output) then
+  Result := False;
+  Running := False;
+  try
+    if not ExecAndCaptureOutput(ExpandConstant('{sys}\tasklist.exe'),
+      '/FI "IMAGENAME eq ' + ImageName + '" /NH', '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode, Output) then
+    begin
+      Log('PoseAnchor: tasklist could not be launched; cannot inspect ' + ImageName);
+      Exit;
+    end;
+  except
+    Log('PoseAnchor: tasklist output redirection failed for ' + ImageName +
+      ': ' + GetExceptionMessage);
+    Exit;
+  end;
+  // A successful exit code cannot prove absence if capture failed or stopped
+  // early. Keep that failure distinct from both a running and a stopped app.
+  if Output.Error then
   begin
-    Log('PoseAnchor: tasklist could not be launched; assuming ' +
-      ImageName + ' is running');
+    Log('PoseAnchor: tasklist output was incomplete; cannot inspect ' + ImageName);
     Exit;
   end;
   Log(Format('PoseAnchor: tasklist %s check exited %d', [ImageName, ResultCode]));
   LogCapturedOutput('PoseAnchor: tasklist', Output);
   if ResultCode <> 0 then
   begin
-    Log('PoseAnchor: tasklist failed; assuming ' + ImageName + ' is running');
+    Log('PoseAnchor: tasklist failed; cannot inspect ' + ImageName);
     Exit;
   end;
 
-  Result := False;
+  Result := True;
   for I := 0 to GetArrayLength(Output.StdOut) - 1 do
     if Pos(Lowercase(ImageName), Lowercase(Output.StdOut[I])) > 0 then
     begin
-      Result := True;
+      Running := True;
       Exit;
     end;
 end;
 
 // Registering or unregistering while vrserver is running does not take effect
 // until the next restart, and an open Status executable can block replacement.
-function IsSteamVrRunning: Boolean;
+function ProcessBlockMessage(const SteamVrMessage, StatusMessage: String): String;
+var
+  Running: Boolean;
 begin
-  Result := IsImageRunning('vrserver.exe');
-end;
-
-function IsStatusRunning: Boolean;
-begin
-  Result := IsImageRunning('PoseAnchorStatus.exe');
+  Result := '';
+  if not TryIsImageRunning('vrserver.exe', Running) then
+    Result := FmtMessage(CustomMessage('ProcessInspectionFailed'), ['vrserver.exe'])
+  else if Running then
+    Result := CustomMessage(SteamVrMessage);
+  if Result <> '' then
+    Exit;
+  if not TryIsImageRunning('PoseAnchorStatus.exe', Running) then
+    Result := FmtMessage(CustomMessage('ProcessInspectionFailed'), ['PoseAnchorStatus.exe'])
+  else if Running then
+    Result := CustomMessage(StatusMessage);
 end;
 
 function AddInstalledDriver: Boolean;
@@ -644,20 +709,19 @@ begin
   Result := False;
   LateSetupBlockMessage := '';
   AppPath := CleanPath(ExpandConstant('{app}'));
+  if GetEnv('VR_PATHREG_OVERRIDE') <> '' then
+  begin
+    LateSetupBlockMessage := CustomMessage('PathRegistryOverride');
+    Exit;
+  end;
   if not LocateSteamVR then
     Exit;
   // Recheck immediately before touching the registry. Either process can be
   // launched while the wizard is waiting after PrepareToInstall.
-  if IsStatusRunning then
-  begin
-    LateSetupBlockMessage := CustomMessage('StatusRunningSetup');
+  LateSetupBlockMessage := ProcessBlockMessage(
+    'SteamVRRunningSetup', 'StatusRunningSetup');
+  if LateSetupBlockMessage <> '' then
     Exit;
-  end;
-  if IsSteamVrRunning then
-  begin
-    LateSetupBlockMessage := CustomMessage('SteamVRRunningSetup');
-    Exit;
-  end;
   if not RegistrationBackupStillCurrent then
   begin
     LateSetupBlockMessage := CustomMessage('RegistrationChangedDuringSetup');
@@ -737,17 +801,16 @@ begin
   Result := False;
   LateUninstallBlockMessage := '';
   AppPath := CleanPath(ExpandConstant('{app}'));
+  if GetEnv('VR_PATHREG_OVERRIDE') <> '' then
+  begin
+    LateUninstallBlockMessage := CustomMessage('PathRegistryOverride');
+    Exit;
+  end;
   // Recheck at the actual mutation point to close the wizard-page TOCTOU gap.
-  if IsStatusRunning then
-  begin
-    LateUninstallBlockMessage := CustomMessage('StatusRunningUninstall');
+  LateUninstallBlockMessage := ProcessBlockMessage(
+    'SteamVRRunningUninstall', 'StatusRunningUninstall');
+  if LateUninstallBlockMessage <> '' then
     Exit;
-  end;
-  if IsSteamVrRunning then
-  begin
-    LateUninstallBlockMessage := CustomMessage('SteamVRRunningUninstall');
-    Exit;
-  end;
 
   if not LocateSteamVR then
   begin
@@ -794,27 +857,35 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   NeedsRestart := False;
-  if not LocateSteamVR then
+  if GetEnv('VR_PATHREG_OVERRIDE') <> '' then
+    Result := CustomMessage('PathRegistryOverride')
+  else if not LocateSteamVR then
     Result := CustomMessage('SteamVRNotFound')
-  else if IsSteamVrRunning then
-    Result := CustomMessage('SteamVRRunningSetup')
-  else if IsStatusRunning then
-    Result := CustomMessage('StatusRunningSetup')
   else
-    Result := PrepareRegistrationPlan;
+  begin
+    Result := ProcessBlockMessage('SteamVRRunningSetup', 'StatusRunningSetup');
+    if Result = '' then
+      Result := PrepareRegistrationPlan;
+  end;
+  if Result <> '' then
+    Result := SetupFailureMessage(Result);
 end;
 
 function InitializeUninstall: Boolean;
+var
+  BlockMessage: String;
 begin
   Result := True;
-  if IsSteamVrRunning then
+  if GetEnv('VR_PATHREG_OVERRIDE') <> '' then
   begin
-    SuppressibleMsgBox(CustomMessage('SteamVRRunningUninstall'), mbError, MB_OK, IDOK);
+    SuppressibleMsgBox(CustomMessage('PathRegistryOverride'), mbError, MB_OK, IDOK);
     Result := False;
+    Exit;
   end;
-  if Result and IsStatusRunning then
+  BlockMessage := ProcessBlockMessage('SteamVRRunningUninstall', 'StatusRunningUninstall');
+  if BlockMessage <> '' then
   begin
-    SuppressibleMsgBox(CustomMessage('StatusRunningUninstall'), mbError, MB_OK, IDOK);
+    SuppressibleMsgBox(BlockMessage, mbError, MB_OK, IDOK);
     Result := False;
   end;
 end;
@@ -827,12 +898,14 @@ begin
     begin
       DriverRegistrationFailed := True;
       if LateSetupBlockMessage <> '' then
-        SuppressibleMsgBox(LateSetupBlockMessage, mbError, MB_OK, IDOK)
+        SuppressibleMsgBox(SetupFailureMessage(LateSetupBlockMessage),
+          mbError, MB_OK, IDOK)
       else if DriverRegistrationRollbackFailed then
-        SuppressibleMsgBox(CustomMessage('RegistrationRollbackFailed'), mbError,
-          MB_OK, IDOK)
+        SuppressibleMsgBox(SetupFailureMessage(
+          CustomMessage('RegistrationRollbackFailed')), mbError, MB_OK, IDOK)
       else
-        SuppressibleMsgBox(CustomMessage('RegistrationFailed'), mbError, MB_OK, IDOK);
+        SuppressibleMsgBox(SetupFailureMessage(CustomMessage('RegistrationFailed')),
+          mbError, MB_OK, IDOK);
     end;
   end;
 end;
@@ -842,7 +915,8 @@ begin
   if CurPageID = wpFinished then
   begin
     if DriverRegistrationFailed then
-      WizardForm.FinishedLabel.Caption := CustomMessage('FinishedFailure')
+      WizardForm.FinishedLabel.Caption :=
+        SetupFailureMessage(CustomMessage('FinishedFailure'))
     else
       WizardForm.FinishedLabel.Caption := CustomMessage('FinishedSuccess');
   end;

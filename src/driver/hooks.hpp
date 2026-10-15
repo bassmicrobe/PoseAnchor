@@ -22,12 +22,13 @@ public:
                  vr::IVRServerDriverHost* currentHost);
     void remove();
     [[nodiscard]] bool submitPose(std::uint32_t deviceIndex,
-                                  const vr::DriverPose_t& pose) noexcept;
+                                  const vr::DriverPose_t& pose,
+                                  std::uint64_t generation) noexcept;
 
 private:
     class CallbackRundown {
     public:
-        CallbackRundown() noexcept { inFlight_.fetch_add(1, std::memory_order_acq_rel); }
+        CallbackRundown() noexcept { inFlight_.fetch_add(1, std::memory_order_seq_cst); }
         ~CallbackRundown() { inFlight_.fetch_sub(1, std::memory_order_acq_rel); }
     };
 
@@ -37,10 +38,12 @@ private:
                                       const vr::DriverPose_t&, std::uint32_t);
 
     struct PoseRoute {
-        std::mutex mutex;
-        std::atomic_uint64_t sequence{};
-        std::atomic<vr::IVRServerDriverHost*> host{nullptr};
-        std::atomic<PoseFn> original{nullptr};
+        // Filtering and forwarding share one per-device lane with the watchdog.
+        // A host may reenter a pose callback on the same thread, so this cannot
+        // be a non-recursive mutex held across the call into the original host.
+        std::recursive_mutex mutex;
+        vr::IVRServerDriverHost* host{};
+        PoseFn original{};
     };
 
     static void* VR_CALLTYPE detourGetInterface(vr::IVRDriverContext* context,

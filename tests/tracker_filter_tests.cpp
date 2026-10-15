@@ -484,6 +484,95 @@ void testLongGapRearmsInsteadOfComparing() {
     CHECK(output.poseValid);
 }
 
+void testLostWatchdogKeepsExactPoseUntilReacquiredOrReset() {
+    const auto sameVector = [](Vec3 a, Vec3 b) {
+        return a.x == b.x && a.y == b.y && a.z == b.z;
+    };
+    const auto samePose = [&sameVector](const RigidPose& a, const RigidPose& b) {
+        return sameVector(a.position, b.position) &&
+               a.orientation.w == b.orientation.w && a.orientation.x == b.orientation.x &&
+               a.orientation.y == b.orientation.y && a.orientation.z == b.orientation.z &&
+               sameVector(a.linearVelocity, b.linearVelocity) &&
+               sameVector(a.angularVelocity, b.angularVelocity) &&
+               sameVector(a.linearAcceleration, b.linearAcceleration) &&
+               sameVector(a.angularAcceleration, b.angularAcceleration);
+    };
+    for (bool capped : {false, true}) {
+        FilterConfig config{};
+        if (capped) {
+            config.holdSeconds = 0.250;
+            config.maxHoldTranslationMeters = 0.010;
+            config.maxHoldRotationRadians = 0.050;
+        }
+        PoseFilter filter(config);
+        CHECK(!filter.tick(ms(100.0)).has_value());
+        (void)filter.push(sample(ms(10.0), {}, {}, {}, {}, InputStatus::Invalid));
+        CHECK(!filter.tick(ms(200.0)).has_value());
+
+        std::int64_t time = ms(10.0);
+        for (int i = 0; i < 8; ++i) {
+            time += ms(10.0);
+            const double seconds = static_cast<double>(time) * 1e-9;
+            (void)filter.push(sample(time, {seconds, 0.0, 0.0},
+                                     fromRotationVector({0.0, seconds, 0.0}),
+                                     {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}));
+        }
+        CHECK(filter.state() == FilterState::Tracking);
+        time += ms(10.0) + ms(config.holdSeconds * 1000.0);
+        const auto firstLost = filter.tick(time);
+        CHECK(firstLost.has_value());
+        if (!firstLost) continue;
+        CHECK(firstLost->state == FilterState::Lost);
+        CHECK(!firstLost->poseValid);
+        CHECK(firstLost->connected && firstLost->modified && !firstLost->synthetic);
+        CHECK(filter.diagnostics().lostEntries == 1);
+        for (int i = 0; i < 20; ++i) {
+            time += ms(2.0);
+            const auto repeated = filter.tick(time);
+            CHECK(repeated.has_value());
+            if (!repeated) continue;
+            CHECK(repeated->state == firstLost->state);
+            CHECK(repeated->poseValid == firstLost->poseValid);
+            CHECK(repeated->connected == firstLost->connected);
+            CHECK(repeated->modified == firstLost->modified);
+            CHECK(repeated->synthetic == firstLost->synthetic);
+            CHECK(repeated->reasons == firstLost->reasons);
+            CHECK(samePose(repeated->world, firstLost->world));
+        }
+        time += ms(10.0);
+        const auto invalid = filter.push(sample(time, {}, {}, {}, {}, InputStatus::Invalid));
+        CHECK(invalid.state == FilterState::Lost);
+        CHECK(samePose(invalid.world, firstLost->world));
+        CHECK(filter.diagnostics().lostEntries == 1);
+
+        // A fresh, coherent stream must reacquire at its own pose, and the next
+        // loss must capture that new anchor rather than reuse the old lost pose.
+        for (int i = 0; i < 9; ++i) {
+            time += ms(10.0);
+            (void)filter.push(sample(time, {2.0, 0.0, 0.0}));
+        }
+        CHECK(filter.state() == FilterState::Tracking);
+        time += ms(10.0) + ms(config.holdSeconds * 1000.0);
+        const auto nextLost = filter.tick(time);
+        CHECK(nextLost.has_value());
+        if (nextLost) {
+            CHECK(nextLost->state == FilterState::Lost);
+            CHECK(nextLost->world.position.x == 2.0);
+            CHECK(!samePose(nextLost->world, firstLost->world));
+        }
+        CHECK(filter.diagnostics().lostEntries == 2);
+
+        filter.reset();
+        CHECK(filter.state() == FilterState::Cold);
+        CHECK(!filter.tick(time + ms(100.0)).has_value());
+        time += ms(10.0);
+        const auto afterReset = filter.push(sample(time, {}, {}, {}, {}, InputStatus::Invalid));
+        CHECK(afterReset.state == FilterState::Cold);
+        CHECK(!afterReset.poseValid);
+        CHECK(samePose(afterReset.world, RigidPose{}));
+    }
+}
+
 void testInvalidGapStillUsesHoldWindow() {
     PoseFilter filter;
     std::int64_t time = warmStationary(filter);
@@ -560,8 +649,9 @@ void testSquaredGateBoundaryMatchesNormComparison() {
     // These vectors are exactly on their stated norm boundaries after IEEE-754
     // square root rounding, while their rounded squared norms are one ulp above.
     // A squared-only comparison would therefore repair/reject them incorrectly.
-    const Vec3 accelerationBoundary{
-        79.99999999644695, 0.0007539822368503881, 0.0};
+    // Exact powers of two add exactly one squared-norm ulp, including compilers
+    // that contract multiply-adds or evaluate constant expressions differently.
+    const Vec3 accelerationBoundary{80.0, std::ldexp(1.0, -20), 0.0};
     CHECK(accelerationBoundary.norm() == 80.0);
     CHECK(accelerationBoundary.squaredNorm() > 80.0 * 80.0);
 
@@ -583,8 +673,7 @@ void testSquaredGateBoundaryMatchesNormComparison() {
     PoseFilter velocityFilter(config);
     time = warmStationary(velocityFilter);
 
-    const Vec3 velocityBoundary{
-        39.99999999995065, 0.00006283185307177003, 0.0};
+    const Vec3 velocityBoundary{40.0, std::ldexp(1.0, -21), 0.0};
     CHECK(velocityBoundary.norm() == 40.0);
     CHECK(velocityBoundary.squaredNorm() > 40.0 * 40.0);
     time += ms(50.0);
@@ -659,6 +748,94 @@ void testDisconnectIsImmediate() {
     CHECK(filter.state() == FilterState::Cold);
 }
 
+void testInterruptedRecoveryRequiresFreshCandidates() {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (bool malformed : {false, true}) {
+        PoseFilter filter;
+        std::int64_t time = warmStationary(filter);
+        const Vec3 relocated{0.4, 0.0, 0.0};
+        time += ms(10.0);
+        CHECK(filter.push(sample(time, relocated)).state == FilterState::Hold);
+        for (int i = 0; i < 2; ++i) {
+            time += ms(10.0);
+            CHECK(filter.push(sample(time, relocated)).state == FilterState::Hold);
+        }
+        time += ms(10.0);
+        PoseSample interruption = sample(time, {nan, 0.0, 0.0});
+        if (!malformed) interruption.status = InputStatus::Invalid;
+        CHECK(filter.push(interruption).state == FilterState::Hold);
+        time += ms(10.0);
+        CHECK(filter.push(sample(time, relocated)).state == FilterState::Hold);
+        time += ms(10.0);
+        CHECK(filter.push(sample(time, relocated)).state == FilterState::Hold);
+        time += ms(10.0);
+        CHECK(filter.push(sample(time, relocated)).state == FilterState::Recovering);
+    }
+}
+
+void testInterruptedLossRequiresFreshCandidates() {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    for (bool malformed : {false, true}) {
+        PoseFilter filter;
+        std::int64_t time = warmStationary(filter);
+        time += ms(160.0);
+        CHECK(filter.push(sample(time, {}, {}, {}, {}, InputStatus::Invalid)).state ==
+              FilterState::Lost);
+        const Vec3 relocated{1.0, 0.0, 0.0};
+        for (int i = 0; i < 8; ++i) {
+            time += ms(10.0);
+            CHECK(filter.push(sample(time, relocated)).state == FilterState::Lost);
+        }
+        time += ms(10.0);
+        PoseSample interruption = sample(time, {nan, 0.0, 0.0});
+        if (!malformed) interruption.status = InputStatus::Invalid;
+        CHECK(filter.push(interruption).state == FilterState::Lost);
+        for (int i = 0; i < 8; ++i) {
+            time += ms(10.0);
+            CHECK(filter.push(sample(time, relocated)).state == FilterState::Lost);
+        }
+        time += ms(10.0);
+        CHECK(filter.push(sample(time, relocated)).state == FilterState::Tracking);
+    }
+}
+
+void testCallbackSilenceBreaksCandidateConfirmation() {
+    PoseFilter filter;
+    std::int64_t time = warmStationary(filter);
+    time += ms(160.0);
+    CHECK(filter.push(sample(time, {}, {}, {}, {}, InputStatus::Invalid)).state ==
+          FilterState::Lost);
+    const Vec3 relocated{1.0, 0.0, 0.0};
+    time += ms(10.0);
+    CHECK(filter.push(sample(time, relocated)).state == FilterState::Lost);
+    time += ms(10.0);
+    CHECK(filter.push(sample(time, relocated)).state == FilterState::Lost);
+    time += ms(100.0);
+    CHECK(filter.push(sample(time, relocated)).state == FilterState::Lost);
+    for (int i = 0; i < 7; ++i) {
+        time += ms(10.0);
+        CHECK(filter.push(sample(time, relocated)).state == FilterState::Lost);
+    }
+    time += ms(10.0);
+    CHECK(filter.push(sample(time, relocated)).state == FilterState::Tracking);
+}
+
+void testPoseOffsetDoesNotFabricateCandidateObservationTime() {
+    PoseFilter filter;
+    std::int64_t arrival = warmStationary(filter);
+    arrival += ms(160.0);
+    CHECK(filter.push(sample(arrival, {}, {}, {}, {}, InputStatus::Invalid)).state ==
+          FilterState::Lost);
+    for (int i = 0; i < 9; ++i) {
+        arrival += ms(10.0);
+        PoseSample candidate = sample(arrival + (i >= 2 ? ms(50.0) : -ms(50.0)),
+                                      {1.0, 0.0, 0.0});
+        candidate.arrivalTimeNs = arrival;
+        CHECK(filter.push(candidate).state ==
+              (i == 8 ? FilterState::Tracking : FilterState::Lost));
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -677,6 +854,7 @@ int main() {
     testColdRequiresCoherentSamples();
     testUnsafeDirectReturnIsRejected();
     testHoldCapsAndLostContinuity();
+    testLostWatchdogKeepsExactPoseUntilReacquiredOrReset();
     testLongGapRearmsInsteadOfComparing();
     testInvalidGapStillUsesHoldWindow();
     testMalformedColdPoseIsForcedInvalid();
@@ -686,6 +864,10 @@ int main() {
     testVelocityRepairAndSilenceTick();
     testPoseTimeOffsetDoesNotFakeSilenceOrReset();
     testDisconnectIsImmediate();
+    testInterruptedRecoveryRequiresFreshCandidates();
+    testInterruptedLossRequiresFreshCandidates();
+    testCallbackSilenceBreaksCandidateConfirmation();
+    testPoseOffsetDoesNotFabricateCandidateObservationTime();
 
     if (failures != 0) {
         std::cerr << failures << " test assertion(s) failed\n";

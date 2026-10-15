@@ -179,7 +179,7 @@ private:
     struct Candidate {
         bool active{};
         int count{};
-        std::int64_t firstTimeNs{};
+        std::int64_t firstArrivalTimeNs{};
         PoseSample last{};
     };
 

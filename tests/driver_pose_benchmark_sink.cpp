@@ -1,4 +1,5 @@
 #include <openvr_driver.h>
+#include "pose_anchor/tracker_filter.hpp"
 
 namespace pose_anchor::benchmark {
 namespace {
@@ -13,6 +14,11 @@ volatile double consumedPoseChecksum{};
 void consumeDriverPose(const vr::DriverPose_t& pose) noexcept {
     const double previous = consumedPoseChecksum;
     consumedPoseChecksum = previous + pose.poseTimeOffset;
+}
+
+void consumePoseSample(const PoseSample& sample) noexcept {
+    const double previous = consumedPoseChecksum;
+    consumedPoseChecksum = previous + sample.world.position.x;
 }
 
 double driverPoseChecksum() noexcept { return consumedPoseChecksum; }

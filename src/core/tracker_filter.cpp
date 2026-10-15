@@ -200,6 +200,9 @@ std::optional<FilterOutput> PoseFilter::tick(std::int64_t nowNs) {
         return std::nullopt;
     }
     lastTickTimeNs_ = nowNs;
+    // Candidate confirmation requires an uninterrupted stream of good callbacks.
+    // A watchdog-detected gap is not evidence that the last candidate stayed valid.
+    clearCandidate();
 
     if (state_ == FilterState::Tracking || state_ == FilterState::Recovering) {
         const RigidPose anchor = hasLastOutput_ ? lastOutput_.world : trusted_.world;
@@ -292,12 +295,14 @@ FilterOutput PoseFilter::handleTracking(const PoseSample& input) {
 
 FilterOutput PoseFilter::handleHold(const PoseSample& input) {
     if (input.status != InputStatus::RunningOk) {
+        clearCandidate();
         return holdOutput(input.timeNs, ReasonUnavailable);
     }
 
     PoseSample sample = input;
     std::uint32_t reasons = ReasonNone;
     if (!prepareRunningSample(sample, reasons)) {
+        clearCandidate();
         return holdOutput(input.timeNs, ReasonUnavailable | reasons);
     }
 
@@ -316,7 +321,7 @@ FilterOutput PoseFilter::handleHold(const PoseSample& input) {
 
     const bool coherent = updateCandidate(sample, 1.5, reasons);
     const double candidateSpan = candidate_.active
-        ? secondsBetween(candidate_.last.timeNs, candidate_.firstTimeNs)
+        ? secondsBetween(candidate_.last.arrivalTimeNs, candidate_.firstArrivalTimeNs)
         : 0.0;
     const bool quick = closeTo(held, sample.world, config_.quickReturnPositionMeters,
                                config_.quickReturnRotationRadians) && candidate_.count >= 2;
@@ -372,18 +377,20 @@ FilterOutput PoseFilter::handleRecovering(const PoseSample& input) {
 
 FilterOutput PoseFilter::handleLost(const PoseSample& input) {
     if (input.status != InputStatus::RunningOk) {
+        clearCandidate();
         return invalidOutput(true, ReasonUnavailable, lostPose_);
     }
 
     PoseSample sample = input;
     std::uint32_t reasons = ReasonNone;
     if (!prepareRunningSample(sample, reasons)) {
+        clearCandidate();
         return invalidOutput(true, ReasonUnavailable | reasons, lostPose_);
     }
 
     (void)updateCandidate(sample, 1.5, reasons);
     const double span = candidate_.active
-        ? secondsBetween(candidate_.last.timeNs, candidate_.firstTimeNs)
+        ? secondsBetween(candidate_.last.arrivalTimeNs, candidate_.firstArrivalTimeNs)
         : 0.0;
     if (candidate_.count >= config_.candidateConfirmSamples && span >= config_.lostReacquireSeconds) {
         state_ = FilterState::Tracking;
@@ -683,8 +690,11 @@ FilterOutput PoseFilter::holdOutput(std::int64_t timeNs, std::uint32_t reasons) 
             state_ = FilterState::Lost;
             clearCandidate();
             ++diagnostics_.lostEntries;
+            // The anchor and hold limit cannot change while Lost. Keep the exact
+            // capped pose for later watchdog ticks instead of repeating exp/trig
+            // and quaternion normalization for every unavailable-tracker update.
+            lostPose_ = predictDamped(holdAnchor_, config_.holdSeconds);
         }
-        lostPose_ = predictDamped(holdAnchor_, config_.holdSeconds);
         return invalidOutput(true, reasons | ReasonUnavailable, lostPose_);
     }
 
@@ -727,10 +737,17 @@ FilterOutput PoseFilter::invalidOutput(bool connected, std::uint32_t reasons,
 
 bool PoseFilter::updateCandidate(PoseSample& sample, double gateScale,
                                  std::uint32_t& reasons) {
+    if (candidate_.active &&
+        secondsBetween(sample.arrivalTimeNs, candidate_.last.arrivalTimeNs) >
+            config_.maxKinematicDtSeconds) {
+        // The watchdog may be disabled or have missed a frame. Do not let a gap
+        // count toward the sustained observation required to reacquire tracking.
+        clearCandidate();
+    }
     if (!candidate_.active) {
         candidate_.active = true;
         candidate_.count = 1;
-        candidate_.firstTimeNs = sample.timeNs;
+        candidate_.firstArrivalTimeNs = sample.arrivalTimeNs;
         candidate_.last = sample;
         return true;
     }
@@ -739,7 +756,7 @@ bool PoseFilter::updateCandidate(PoseSample& sample, double gateScale,
     if (isOutlier(candidate_.last, sample, gateScale, candidateReasons)) {
         reasons |= candidateReasons;
         candidate_.count = 1;
-        candidate_.firstTimeNs = sample.timeNs;
+        candidate_.firstArrivalTimeNs = sample.arrivalTimeNs;
         candidate_.last = sample;
         return false;
     }

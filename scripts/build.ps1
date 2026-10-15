@@ -11,7 +11,7 @@ if (-not (Test-Path -LiteralPath $vsWhere)) {
     throw 'Visual Studio Installer (vswhere.exe) was not found.'
 }
 
-$vsInstall = & $vsWhere -latest -products * `
+$vsInstall = & $vsWhere -latest -products * -version '[17.0,18.0)' `
     -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
     -property installationPath
 if (-not $vsInstall) {

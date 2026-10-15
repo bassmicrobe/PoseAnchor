@@ -1,6 +1,7 @@
 #pragma once
 
 #include "device_registry.hpp"
+#include "diagnostic_rate_limiter.hpp"
 #include "pose_anchor/tracker_filter.hpp"
 #include "pose_adapter.hpp"
 
@@ -38,6 +39,10 @@ public:
     [[nodiscard]] bool filterPose(std::uint32_t deviceIndex,
                                   const vr::DriverPose_t& rawPose,
                                   vr::DriverPose_t& filteredPose);
+    // Called with this device's forwarding lane held, after a watchdog snapshot
+    // was built. A fresh callback/disconnect invalidates that snapshot before send.
+    [[nodiscard]] bool isCurrentPoseGeneration(std::uint32_t deviceIndex,
+                                               std::uint64_t generation) noexcept;
     void log(const std::string& message) const noexcept;
 
 private:
@@ -53,10 +58,12 @@ private:
         FilterState lastState{FilterState::Cold};
         bool driverFromHeadWarningLogged{};
         bool identifiedLogged{};
+        DiagnosticRateLimiter worldTransformLogRate;
+        DiagnosticRateLimiter headTransformLogRate;
         bool hasDriverPose{};
         vr::DriverPose_t lastDriverPose{};
-        // Bumped whenever the armed state or stored pose changes, so RunFrame's
-        // unlocked watchdog submit cannot clobber a slot re-armed by a fresh pose.
+        // Bumped whenever the armed state or stored pose changes. Checked before
+        // watchdog forwarding and before committing its terminal Lost one-shot.
         std::uint64_t generation{};
         std::array<std::int64_t, kFilterStateCount> lastTransitionLogNs{};
         std::array<std::uint32_t, kFilterStateCount> suppressedTransitionLogs{};
@@ -76,6 +83,7 @@ private:
     [[nodiscard]] static std::int64_t steadyNowNs();
 
     std::atomic_bool active_{false};
+    std::atomic_uint32_t runFramesInFlight_{};
     bool filterEnabled_{true};
     bool syntheticWatchdogEnabled_{true};
     FilterConfig config_{};

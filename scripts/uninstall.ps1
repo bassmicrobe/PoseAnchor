@@ -15,14 +15,14 @@ if (-not $DriverPath) {
         Join-Path $projectOrPackageRoot 'build\pose_anchor'
     }
 }
-if (Get-Process vrserver -ErrorAction SilentlyContinue) {
-    throw 'Exit SteamVR before unregistering the driver.'
-}
+Assert-SteamVrRegistrationWritable
 $vrPathReg = Find-SteamVrPathReg
 if ($AllWithName) {
     if ($PSCmdlet.ShouldProcess('pose_anchor', 'Unregister every SteamVR driver with this name')) {
+        Assert-SteamVrRegistrationWritable
         & $vrPathReg removedriverswithname pose_anchor
         if ($LASTEXITCODE -ne 0) { throw "vrpathreg removedriverswithname failed: $LASTEXITCODE" }
+        Assert-PoseAnchorDriverRegistration -VrPathReg $vrPathReg -Absent -AllWithName
         Write-Host 'Unregistered every PoseAnchor path.'
     }
     return
@@ -37,7 +37,9 @@ $resolvedDriver = if (Test-Path -LiteralPath $DriverPath) {
     $PSCmdlet.GetUnresolvedProviderPathFromPSPath($DriverPath)
 }
 if ($PSCmdlet.ShouldProcess($resolvedDriver, 'Unregister the SteamVR external driver')) {
+    Assert-SteamVrRegistrationWritable
     & $vrPathReg removedriver $resolvedDriver
     if ($LASTEXITCODE -ne 0) { throw "vrpathreg removedriver failed: $LASTEXITCODE. If this path is not the registered one, run scripts\uninstall.ps1 -AllWithName to remove every pose_anchor registration." }
+    Assert-PoseAnchorDriverRegistration -VrPathReg $vrPathReg -DriverPath $resolvedDriver -Absent
     Write-Host "Unregistered PoseAnchor: $resolvedDriver"
 }

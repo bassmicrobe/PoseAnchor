@@ -1,6 +1,8 @@
 #include "device_registry.hpp"
 
 #include <cstdlib>
+#include <chrono>
+#include <cstring>
 #include <iostream>
 #include <string_view>
 
@@ -26,9 +28,111 @@ DeviceIdentity lighthouseTracker() {
     return identity;
 }
 
+class TestProperties final : public vr::IVRProperties {
+public:
+    unsigned reads{};
+    bool trackerIdentityReady{};
+
+    vr::ETrackedPropertyError ReadPropertyBatch(vr::PropertyContainerHandle_t,
+                                                 vr::PropertyRead_t* batch,
+                                                 std::uint32_t count) override {
+        reads += count;
+        for (std::uint32_t i = 0; i < count; ++i) {
+            auto& item = batch[i];
+            const std::int32_t deviceClass = vr::TrackedDeviceClass_GenericTracker;
+            if (item.prop == vr::Prop_DeviceClass_Int32) {
+                set(item, &deviceClass, sizeof(deviceClass), vr::k_unInt32PropertyTag);
+            } else if (item.prop == vr::Prop_TrackingSystemName_String) {
+                const char* system = trackerIdentityReady ? "lighthouse" : "other_vendor";
+                set(item, system, std::strlen(system) + 1, vr::k_unStringPropertyTag);
+            } else if (item.prop == vr::Prop_RegisteredDeviceType_String) {
+                const char* type = trackerIdentityReady ? "htc/vive_tracker" : "other_tracker";
+                set(item, type, std::strlen(type) + 1, vr::k_unStringPropertyTag);
+            } else {
+                item.eError = vr::TrackedProp_UnknownProperty;
+                item.unRequiredBufferSize = 0;
+                item.unTag = vr::k_unInvalidPropertyTag;
+            }
+        }
+        return vr::TrackedProp_Success;
+    }
+
+    vr::ETrackedPropertyError WritePropertyBatch(vr::PropertyContainerHandle_t,
+                                                  vr::PropertyWrite_t*,
+                                                  std::uint32_t) override {
+        return vr::TrackedProp_InvalidOperation;
+    }
+    const char* GetPropErrorNameFromEnum(vr::ETrackedPropertyError) override { return "test"; }
+    vr::PropertyContainerHandle_t TrackedDeviceToPropertyContainer(
+        vr::TrackedDeviceIndex_t index) override { return index + 1; }
+
+private:
+    static void set(vr::PropertyRead_t& item, const void* value, std::size_t bytes,
+                    vr::PropertyTypeTag_t tag) {
+        item.unTag = tag;
+        item.unRequiredBufferSize = static_cast<std::uint32_t>(bytes);
+        item.eError = item.unBufferSize < bytes ? vr::TrackedProp_BufferTooSmall
+                                               : vr::TrackedProp_Success;
+        if (item.eError == vr::TrackedProp_Success) std::memcpy(item.pvBuffer, value, bytes);
+    }
+};
+
+class TestContext final : public vr::IVRDriverContext {
+public:
+    TestProperties properties;
+
+    void* GetGenericInterface(const char* version, vr::EVRInitError* error) override {
+        const bool matched = std::strcmp(version, vr::IVRProperties_Version) == 0;
+        if (error) *error = matched ? vr::VRInitError_None : vr::VRInitError_Init_InterfaceNotFound;
+        return matched ? &properties : nullptr;
+    }
+    vr::DriverHandle_t GetDriverHandle() override { return 1; }
+};
+
+void testOptionalPropertyRetriesAreBounded() {
+    using namespace std::chrono_literals;
+    TestContext context;
+    vr::VRDriverContext() = &context;
+    DeviceRegistry registry;
+    const auto start = std::chrono::steady_clock::time_point{} + 1s;
+    registry.requestClassification(0);
+    registry.classifyPendingAt(start);
+    CHECK(registry.kind(0) == DeviceKind::Unknown);
+    const unsigned firstReads = context.properties.reads;
+    CHECK(firstReads >= 8);
+    for (int i = 1; i < 100; ++i) {
+        registry.requestClassification(0);
+        registry.classifyPendingAt(start + std::chrono::milliseconds(i));
+    }
+    CHECK(context.properties.reads == firstReads);
+    registry.classifyPendingAt(start + 100ms);
+    CHECK(context.properties.reads == 2 * firstReads);
+
+    // A newly discovered device is classified immediately, even while another
+    // slot is backing off. Missing optional properties cannot defeat a match.
+    context.properties.trackerIdentityReady = true;
+    registry.requestClassification(1);
+    registry.classifyPendingAt(start + 101ms);
+    CHECK(registry.kind(1) == DeviceKind::ViveTracker);
+    CHECK(registry.kind(0) == DeviceKind::Unknown);
+    const unsigned readsBeforeRetry = context.properties.reads;
+    registry.classifyPendingAt(start + 299ms);
+    CHECK(context.properties.reads == readsBeforeRetry);
+    registry.classifyPendingAt(start + 300ms);
+    CHECK(registry.kind(0) == DeviceKind::ViveTracker);
+
+    // Session reset must discard retry deadlines and classify fresh slots now.
+    registry.reset();
+    registry.requestClassification(0);
+    registry.classifyPendingAt(start);
+    CHECK(registry.kind(0) == DeviceKind::ViveTracker);
+    vr::CleanupDriverContext();
+}
+
 }  // namespace
 
 int main() {
+    testOptionalPropertyRetriesAreBounded();
     // A real Vive Tracker 3.0 as SteamVR reports it.
     {
         DeviceIdentity identity = lighthouseTracker();

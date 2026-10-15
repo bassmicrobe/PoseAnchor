@@ -13,6 +13,7 @@ using namespace pose_anchor::driver;
 
 namespace pose_anchor::benchmark {
 void consumeDriverPose(const vr::DriverPose_t& pose) noexcept;
+void consumePoseSample(const PoseSample& sample) noexcept;
 double driverPoseChecksum() noexcept;
 }  // namespace pose_anchor::benchmark
 
@@ -30,6 +31,47 @@ double timePoseForwarding(Forward&& forward, vr::DriverPose_t& pose,
     return static_cast<double>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()) /
         static_cast<double>(iterations);
+}
+
+struct AdapterResult {
+    double nanosecondsPerSample{};
+    std::uint64_t unexpectedChanges{};
+};
+
+// Exercise the production adapter calls made for every accepted tracker callback.
+// Constant non-identity transforms match a calibrated tracking space and tracker
+// attachment; the device position and timestamp continue to change each sample.
+AdapterResult timeAdapter(vr::DriverPose_t pose, std::uint64_t iterations,
+                         bool includeSampleConversion) {
+    WorldFromDriver previousWorld{};
+    DriverFromHead previousHead{};
+    (void)PoseAdapter::readWorldFromDriver(pose, previousWorld);
+    (void)PoseAdapter::readDriverFromHead(pose, previousHead);
+    AdapterResult result{};
+    const auto started = std::chrono::steady_clock::now();
+    for (std::uint64_t i = 0; i < iterations; ++i) {
+        WorldFromDriver world{};
+        DriverFromHead head{};
+        if (!PoseAdapter::readWorldFromDriver(pose, world) ||
+            !PoseAdapter::readDriverFromHead(pose, head)) {
+            ++result.unexpectedChanges;
+            continue;
+        }
+        result.unexpectedChanges += PoseAdapter::transformChanged(previousWorld, world);
+        result.unexpectedChanges += PoseAdapter::transformChanged(previousHead, head);
+        previousWorld = world;
+        previousHead = head;
+        if (includeSampleConversion) {
+            pose.vecPosition[0] = static_cast<double>(i) * 0.001;
+            pose_anchor::benchmark::consumePoseSample(
+                PoseAdapter::toSample(pose, world, static_cast<std::int64_t>(i) * 1'000'000));
+        }
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    result.nanosecondsPerSample = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()) /
+        static_cast<double>(iterations);
+    return result;
 }
 
 }  // namespace
@@ -100,6 +142,20 @@ int main() {
             pose_anchor::benchmark::consumeDriverPose(copy);
         }, pose, iterations);
 
+    const auto worldRotation = pose_anchor::fromRotationVector({0.1, 0.7, -0.2});
+    const auto headRotation = pose_anchor::fromRotationVector({-0.3, 0.2, 0.4});
+    pose.qWorldFromDriverRotation = {
+        worldRotation.w, worldRotation.x, worldRotation.y, worldRotation.z};
+    pose.qDriverFromHeadRotation = {
+        headRotation.w, headRotation.x, headRotation.y, headRotation.z};
+    pose.vecWorldFromDriverTranslation[0] = 1.0;
+    pose.vecDriverFromHeadTranslation[1] = 0.03;
+    pose.qRotation.w = 1.0;
+    pose.vecVelocity[0] = 1.0;
+    pose.result = vr::TrackingResult_Running_OK;
+    const AdapterResult transforms = timeAdapter(pose, iterations, false);
+    const AdapterResult adapter = timeAdapter(pose, iterations, true);
+
     std::cout << std::fixed << std::setprecision(2)
               << "iterations=" << iterations << '\n'
               << "idle_scan_ns=" << totalNanoseconds / static_cast<double>(iterations)
@@ -122,6 +178,10 @@ int main() {
               << "copied_forward_ns=" << copiedForwardNanoseconds << '\n'
               << "copy_overhead_ns=" << copiedForwardNanoseconds - rawForwardNanoseconds
               << '\n'
+              << "static_transform_pair_ns=" << transforms.nanosecondsPerSample << '\n'
+              << "adapter_pipeline_ns=" << adapter.nanosecondsPerSample << '\n'
+              << "adapter_unexpected_changes="
+              << transforms.unexpectedChanges + adapter.unexpectedChanges << '\n'
               << "checksum=" << pose_anchor::benchmark::driverPoseChecksum() << '\n';
-    return 0;
+    return transforms.unexpectedChanges == 0 && adapter.unexpectedChanges == 0 ? 0 : 1;
 }

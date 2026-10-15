@@ -17,6 +17,7 @@
 #include <tlhelp32.h>
 
 #include "status_parser.hpp"
+#include "status_overview.hpp"
 
 #include <algorithm>
 #include <array>
@@ -45,6 +46,8 @@ constexpr std::uint64_t kMaximumLogBytes = 16ULL * 1024ULL * 1024ULL;
 constexpr std::uint64_t kMaximumMetadataBytes = 2ULL * 1024ULL * 1024ULL;
 constexpr int kOpenLogButton = 1001;
 constexpr int kOpenReadmeButton = 1002;
+constexpr int kRefreshButton = 1003;
+constexpr std::size_t kMaximumVisibleTrackers = 6;
 
 class UniqueHandle {
 public:
@@ -84,6 +87,7 @@ struct FileContents {
 
 struct ProcessInfo {
     bool running{};
+    bool inspectionComplete{};
     DWORD processId{};
     std::filesystem::path executable;
     std::optional<LocalTimestamp> start;
@@ -96,13 +100,6 @@ struct RegistrationInfo {
     std::filesystem::path otherRoot;
     bool skippedRemotePath{};
     bool skippedUnsupportedPath{};
-};
-
-enum class EvidenceState {
-    Yes,
-    No,
-    Unknown,
-    NotApplicable,
 };
 
 struct RuntimeStatus {
@@ -123,15 +120,21 @@ struct UiText {
     std::wstring footer;
     std::wstring openLog;
     std::wstring openReadme;
+    std::wstring refresh;
     bool warning{};
 };
 
 struct DialogContext {
+    std::filesystem::path driverRoot;
     std::filesystem::path logPath;
     std::filesystem::path readmePath;
     bool logAvailable{};
     bool readmeAvailable{};
     bool japanese{};
+    bool expanded{};
+    UiText text;
+    std::array<TASKDIALOG_BUTTON, 3> buttons{};
+    TASKDIALOGCONFIG config{};
 };
 
 [[nodiscard]] bool fileExists(const std::filesystem::path& path) noexcept {
@@ -248,14 +251,16 @@ struct DialogContext {
     DWORD bytes{};
     if (RegQueryValueExW(key.key, name, nullptr, &type, nullptr, &bytes) != ERROR_SUCCESS ||
         (type != REG_SZ && type != REG_EXPAND_SZ) || bytes < sizeof(wchar_t) ||
-        bytes > 64 * 1024) {
+        bytes > 64 * 1024 || bytes % sizeof(wchar_t) != 0) {
         return std::nullopt;
     }
     std::wstring value(bytes / sizeof(wchar_t), L'\0');
     if (RegQueryValueExW(key.key, name, nullptr, &type,
-                         reinterpret_cast<BYTE*>(value.data()), &bytes) != ERROR_SUCCESS) {
+                         reinterpret_cast<BYTE*>(value.data()), &bytes) != ERROR_SUCCESS ||
+        (type != REG_SZ && type != REG_EXPAND_SZ) || bytes % sizeof(wchar_t) != 0) {
         return std::nullopt;
     }
+    value.resize(bytes / sizeof(wchar_t));
     while (!value.empty() && value.back() == L'\0') value.pop_back();
     if (type == REG_EXPAND_SZ) {
         const DWORD required = ExpandEnvironmentStringsW(value.c_str(), nullptr, 0);
@@ -270,14 +275,22 @@ struct DialogContext {
     return value.empty() ? std::nullopt : std::optional<std::wstring>{std::move(value)};
 }
 
-[[nodiscard]] std::optional<std::filesystem::path> localAppDataPath() {
-    const DWORD required = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
+[[nodiscard]] std::optional<std::filesystem::path> environmentPath(const wchar_t* name) {
+    const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
     if (required == 0 || required > 32768) return std::nullopt;
     std::wstring value(required, L'\0');
-    const DWORD written = GetEnvironmentVariableW(L"LOCALAPPDATA", value.data(), required);
+    const DWORD written = GetEnvironmentVariableW(name, value.data(), required);
     if (written == 0 || written >= required) return std::nullopt;
     value.resize(written);
     return std::filesystem::path(std::move(value));
+}
+
+[[nodiscard]] std::optional<std::filesystem::path> openVrRegistrationPath() {
+    if (auto overridePath = environmentPath(L"VR_PATHREG_OVERRIDE")) return overridePath;
+    if (auto local = environmentPath(L"LOCALAPPDATA")) {
+        return *local / L"openvr" / L"openvrpaths.vrpath";
+    }
+    return std::nullopt;
 }
 
 [[nodiscard]] std::optional<std::filesystem::path> steamRootFromRegistry() {
@@ -336,26 +349,44 @@ struct DialogContext {
 
     PROCESSENTRY32W entry{};
     entry.dwSize = sizeof(entry);
-    if (!Process32FirstW(snapshot.get(), &entry)) return result;
+    if (!Process32FirstW(snapshot.get(), &entry)) {
+        result.inspectionComplete = GetLastError() == ERROR_NO_MORE_FILES;
+        return result;
+    }
 
     std::uint64_t newestCreation = 0;
     bool inaccessibleMatch = false;
+    bool inspectionFailed = false;
     do {
         if (_wcsicmp(entry.szExeFile, L"vrserver.exe") != 0) continue;
         UniqueHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
                                          FALSE, entry.th32ProcessID));
         if (!process) {
-            inaccessibleMatch = inaccessibleMatch || GetLastError() == ERROR_ACCESS_DENIED;
+            const DWORD error = GetLastError();
+            inaccessibleMatch = inaccessibleMatch || error == ERROR_ACCESS_DENIED;
+            // A process which exited after the snapshot is not a failed scan.
+            if (error != ERROR_INVALID_PARAMETER) {
+                inspectionFailed = true;
+            }
             continue;
         }
-        if (WaitForSingleObject(process.get(), 0) != WAIT_TIMEOUT) continue;
+        const DWORD waitResult = WaitForSingleObject(process.get(), 0);
+        if (waitResult != WAIT_TIMEOUT) {
+            if (waitResult != WAIT_OBJECT_0) inspectionFailed = true;
+            continue;
+        }
         result.running = true;
 
         FILETIME created{};
         FILETIME exited{};
         FILETIME kernel{};
         FILETIME user{};
-        if (!GetProcessTimes(process.get(), &created, &exited, &kernel, &user)) continue;
+        if (!GetProcessTimes(process.get(), &created, &exited, &kernel, &user)) {
+            // An unreadable match could be newer than another readable match.
+            // Never attribute an older process's log to the current instance.
+            inspectionFailed = true;
+            continue;
+        }
         ULARGE_INTEGER packed{};
         packed.LowPart = created.dwLowDateTime;
         packed.HighPart = created.dwHighDateTime;
@@ -364,6 +395,7 @@ struct DialogContext {
         newestCreation = packed.QuadPart;
         result.processId = entry.th32ProcessID;
         result.start = fileTimeToLocalTimestamp(created);
+        result.executable.clear();
 
         std::wstring path(32768, L'\0');
         DWORD length = static_cast<DWORD>(path.size());
@@ -372,6 +404,7 @@ struct DialogContext {
             result.executable = std::filesystem::path(std::move(path));
         }
     } while (Process32NextW(snapshot.get(), &entry));
+    result.inspectionComplete = !inspectionFailed && GetLastError() == ERROR_NO_MORE_FILES;
     if (!result.running && inaccessibleMatch) result.running = true;
     return result;
 }
@@ -525,12 +558,19 @@ struct DialogContext {
         return result;
     }
 
-    const auto local = localAppDataPath();
-    if (!local) {
+    const auto registrationPath = openVrRegistrationPath();
+    if (!registrationPath) {
         result.state = RegistrationState::Unknown;
         return result;
     }
-    result.registrationFile = *local / L"openvr" / L"openvrpaths.vrpath";
+    result.registrationFile = *registrationPath;
+    const ManifestPathKind registrationKind = classifyManifestCandidate(result.registrationFile);
+    if (registrationKind != ManifestPathKind::Local) {
+        result.state = RegistrationState::InspectionIncomplete;
+        result.skippedRemotePath = registrationKind == ManifestPathKind::Remote;
+        result.skippedUnsupportedPath = registrationKind == ManifestPathKind::Unsupported;
+        return result;
+    }
     const FileContents registration = readFile(
         result.registrationFile, kMaximumMetadataBytes, false);
     if (!registration.exists) {
@@ -596,27 +636,69 @@ struct DialogContext {
     return result;
 }
 
+[[nodiscard]] std::filesystem::path findVrServerLog(const ProcessInfo& process) {
+    // Match OpenVR's configured log location, which need not be in the Steam
+    // library containing SteamVR. Never silently fall back from an explicit
+    // remote/unsupported override to a different, potentially stale log.
+    if (const auto overridePath = environmentPath(L"VR_LOG_PATH")) {
+        return classifyManifestCandidate(*overridePath) == ManifestPathKind::Local
+            ? *overridePath / L"vrserver.txt" : std::filesystem::path{};
+    }
+    if (const auto registryPath = openVrRegistrationPath()) {
+        if (classifyManifestCandidate(*registryPath) != ManifestPathKind::Local) return {};
+        const FileContents registration = readFile(*registryPath, kMaximumMetadataBytes, false);
+        if (registration.opened) {
+            const auto logRoots = findJsonStringArray(registration.bytes, "log");
+            if (logRoots.status == JsonLookupStatus::Malformed) return {};
+            if (logRoots.status == JsonLookupStatus::Found && !logRoots.values.empty()) {
+                const auto& utf8Root = logRoots.values.front();
+                if (classifyWindowsManifestPath(utf8Root) != ManifestPathKind::Local) return {};
+                const auto wideRoot = utf8ToWide(utf8Root);
+                if (wideRoot.empty()) return {};
+                const std::filesystem::path root(wideRoot);
+                return classifyManifestCandidate(root) == ManifestPathKind::Local
+                    ? root / L"vrserver.txt" : std::filesystem::path{};
+            }
+        } else if (registration.exists || environmentPath(L"VR_PATHREG_OVERRIDE")) {
+            return {};
+        }
+    }
+    auto steamRoot = steamRootFromRegistry();
+    if (!steamRoot && !process.executable.empty()) {
+        steamRoot = steamRootFromExecutable(process.executable);
+    }
+    if (!steamRoot || classifyManifestCandidate(*steamRoot) != ManifestPathKind::Local) return {};
+    return *steamRoot / L"logs" / L"vrserver.txt";
+}
+
 [[nodiscard]] RuntimeStatus inspectRuntime() {
     RuntimeStatus result;
     result.process = findVrServer();
-    std::optional<std::filesystem::path> steamRoot;
-    if (!result.process.executable.empty()) {
-        steamRoot = steamRootFromExecutable(result.process.executable);
+    result.logPath = findVrServerLog(result.process);
+    if (!result.process.inspectionComplete) {
+        result.loaded = result.hook = EvidenceState::Unknown;
+        return result;
     }
-    if (!steamRoot) steamRoot = steamRootFromRegistry();
-    if (steamRoot) result.logPath = *steamRoot / L"logs" / L"vrserver.txt";
     // Keep the existing log available to the explicit "Open log" action while
     // SteamVR is stopped, but never use it as evidence for current runtime state.
     if (!result.process.running) return result;
+    result.loaded = EvidenceState::Unknown;
+    result.hook = EvidenceState::Unknown;
     if (result.logPath.empty()) return result;
 
     result.log = readFile(result.logPath, kMaximumLogBytes, true);
-    if (!result.log.opened || !result.process.start) return result;
+    if (!result.log.opened || !result.process.start) {
+        std::string{}.swap(result.log.bytes);
+        return result;
+    }
 
     ParseOptions options;
     options.sessionStart = result.process.start;
     options.maxRecentEvents = 5;
     result.session = parseVrServerLog(result.log.bytes, options);
+    // The dialog only needs the summary. Release the up-to-16 MiB snapshot
+    // before entering its idle message loop.
+    std::string{}.swap(result.log.bytes);
     result.completeSessionCoverage = !result.log.truncated ||
         (result.session.oldestTimestamp &&
          *result.session.oldestTimestamp <= *result.process.start);
@@ -693,8 +775,23 @@ struct DialogContext {
     return {};
 }
 
+[[nodiscard]] std::wstring compactIdentity(std::string_view text, std::size_t limit = 48) {
+    auto result = utf8ToWide(text);
+    if (result.size() <= limit) return result;
+    // Avoid splitting a UTF-16 surrogate pair at the display boundary.
+    if (limit != 0 && result[limit - 1] >= 0xD800 && result[limit - 1] <= 0xDBFF) --limit;
+    result.resize(limit);
+    result += L'…';
+    return result;
+}
+
 void appendTrackerSummary(std::wostringstream& stream, const RuntimeStatus& runtime,
                           bool japanese) {
+    if (!runtime.process.inspectionComplete) {
+        stream << (japanese ? L"Vive Tracker: 確認できません（SteamVRの状態が未確認）\n"
+                            : L"Vive Tracker: Could not verify (SteamVR state is unknown)\n");
+        return;
+    }
     if (!runtime.process.running) {
         stream << (japanese
             ? L"Vive Tracker: —（SteamVR停止中。以前のログは判定に使用していません）\n"
@@ -706,7 +803,8 @@ void appendTrackerSummary(std::wostringstream& stream, const RuntimeStatus& runt
                             : L"Vive Tracker: Could not verify\n");
         return;
     }
-    stream << L"Vive Tracker: " << runtime.session.trackers.size();
+    stream << (japanese ? L"Vive Tracker 認識履歴: " : L"Vive Tracker recognition history: ")
+           << runtime.session.trackers.size();
     if (runtime.session.trackersTruncated) {
         stream << (japanese ? L"+（表示上限）" : L"+ (display limit)");
     }
@@ -716,26 +814,32 @@ void appendTrackerSummary(std::wostringstream& stream, const RuntimeStatus& runt
         return;
     }
     stream << L'\n';
-    for (const TrackerInfo& tracker : runtime.session.trackers) {
-        stream << L"  • " << utf8ToWide(tracker.serial);
-        if (!tracker.model.empty()) stream << L" — " << utf8ToWide(tracker.model);
+    const auto visible = std::min(runtime.session.trackers.size(), kMaximumVisibleTrackers);
+    for (std::size_t index = 0; index < visible; ++index) {
+        const TrackerInfo& tracker = runtime.session.trackers[index];
+        stream << L"  • " << compactIdentity(tracker.serial, 32);
+        if (!tracker.model.empty()) stream << L" — " << compactIdentity(tracker.model, 32);
         stream << L'\n';
+    }
+    if (runtime.session.trackers.size() > visible) {
+        stream << (japanese ? L"  ほか " : L"  Plus ")
+               << runtime.session.trackers.size() - visible
+               << (japanese ? L" 個（全一覧はログで確認）\n"
+                            : L" more (see log for the full list)\n");
     }
 }
 
 void appendEventSummary(std::wostringstream& stream, const RuntimeStatus& runtime,
                         bool japanese) {
-    if (!runtime.process.running || runtime.loaded != EvidenceState::Yes) {
+    if (!runtime.process.inspectionComplete || !runtime.process.running || runtime.loaded != EvidenceState::Yes) {
         stream << (japanese ? L"イベント: —\n" : L"Events: —\n");
         return;
     }
 
-    const bool partial = !runtime.completeSessionCoverage;
-    stream << (japanese ? L"ログで確認できたイベント: " : L"Events observed in log: ")
+    stream << (japanese ? L"ログで確認できたイベント（下限）: " : L"Events observed in log (minimum): ")
            << L"Hold " << runtime.session.holdTransitions
            << L" / Recovery " << runtime.session.recoveryTransitions
            << L" / Lost " << runtime.session.lostTransitions;
-    if (partial) stream << (japanese ? L" 以上" : L" or more");
     stream << L'\n';
 
     if (runtime.session.recentEvents.empty()) {
@@ -744,11 +848,11 @@ void appendEventSummary(std::wostringstream& stream, const RuntimeStatus& runtim
     }
     for (const TransitionEvent& event : runtime.session.recentEvents) {
         stream << L"  • " << formatTimestamp(event.timestamp, false) << L"  "
-               << utf8ToWide(event.serial) << L"  " << utf8ToWide(event.fromState)
+               << compactIdentity(event.serial, 32) << L"  " << utf8ToWide(event.fromState)
                << L" → " << utf8ToWide(event.toState);
         if (event.suppressed != 0) {
             stream << (japanese ? L"（省略分 " : L" (suppressed ")
-                   << event.suppressed << L')';
+                   << event.suppressed << (japanese ? L"）" : L")");
         }
         stream << L'\n';
     }
@@ -758,54 +862,100 @@ void appendEventSummary(std::wostringstream& stream, const RuntimeStatus& runtim
                                  const RuntimeStatus& runtime, bool japanese) {
     UiText text;
     text.title = japanese ? L"PoseAnchor ステータス" : L"PoseAnchor Status";
-    text.openLog = japanese ? L"ログを開く" : L"Open log";
-    text.openReadme = japanese ? L"READMEを開く" : L"Open README";
-    text.footer = japanese
-        ? L"起動時点のスナップショットです。閉じるとプロセスは残りません。"
-        : L"Snapshot at launch; no process remains after this window is closed.";
+    text.openLog = japanese ? L"ログを開く(&L)" : L"Open log (&L)";
+    text.openReadme = japanese ? L"READMEを開く(&H)" : L"Open README (&H)";
+    text.refresh = japanese ? L"再確認(&R)" : L"Refresh (&R)";
+    SYSTEMTIME checked{};
+    GetLocalTime(&checked);
+    text.footer = (japanese ? L"確認時刻: " : L"Checked: ") + formatTimestamp(
+        {checked.wYear, checked.wMonth, checked.wDay, checked.wHour,
+         checked.wMinute, checked.wSecond, checked.wMilliseconds}, true);
+    text.footer += japanese
+        ? L"\n自動更新はしません。閉じるとこの画面のプロセスは終了します。"
+        : L"\nNo automatic polling. Closing this window ends its process.";
 
-    const bool active = registration.state == RegistrationState::Registered &&
-        runtime.process.running && runtime.loaded == EvidenceState::Yes &&
-        runtime.hook == EvidenceState::Yes;
-    if (active) {
-        text.mainInstruction = japanese ? L"PoseAnchor は有効です"
-                                        : L"PoseAnchor is active";
-    } else if (!runtime.process.running &&
-               registration.state == RegistrationState::Registered) {
-        text.mainInstruction = japanese ? L"SteamVR は停止しています"
-                                        : L"SteamVR is stopped";
-    } else {
-        text.mainInstruction = japanese ? L"PoseAnchor の確認が必要です"
-                                        : L"PoseAnchor needs attention";
-        text.warning = true;
+    std::wstring action;
+    const auto overview = selectOverview(registration.state, runtime.process.running,
+        runtime.loaded, runtime.hook, runtime.session.filterDisabled, runtime.session.trackers.size(),
+        runtime.process.inspectionComplete);
+    text.warning = true;
+    switch (overview) {
+        case OverviewState::Ready:
+            text.mainInstruction = japanese ? L"補正の準備ができています" : L"Filtering is ready";
+            action = japanese ? L"ドライバーと補正機能の読み込みをログで確認しました。"
+                              : L"The log confirms the driver and filtering hook are loaded.";
+            text.warning = false;
+            break;
+        case OverviewState::WaitingForTracker:
+            text.mainInstruction = japanese ? L"Tracker の認識を待っています" : L"Waiting for a tracker";
+            action = japanese ? L"Tracker の電源・接続を確認してから「再確認」を押してください。"
+                              : L"Check tracker power and connection, then select Refresh.";
+            text.warning = false;
+            break;
+        case OverviewState::SteamVrStopped:
+            text.mainInstruction = japanese ? L"SteamVR は停止しています" : L"SteamVR is stopped";
+            action = japanese ? L"SteamVR を起動してから「再確認」を押してください。"
+                              : L"Start SteamVR, then select Refresh.";
+            text.warning = false;
+            break;
+        case OverviewState::SteamVrUnknown:
+            text.mainInstruction = japanese ? L"SteamVR の状態を確認できません" : L"SteamVR state could not be verified";
+            action = japanese ? L"プロセスの確認に失敗しました。「再確認」を試し、続く場合は Windows を再起動してください。"
+                              : L"Process inspection failed. Try Refresh; if it persists, restart Windows.";
+            break;
+        case OverviewState::Disabled:
+            text.mainInstruction = japanese ? L"補正は設定で無効になっています" : L"Filtering is disabled in settings";
+            action = japanese ? L"README の設定手順を確認し、変更後は SteamVR を再起動してください。"
+                              : L"Follow the README settings instructions, then restart SteamVR.";
+            break;
+        case OverviewState::NotRegistered:
+            text.mainInstruction = japanese ? L"SteamVR に登録されていません" : L"Not registered with SteamVR";
+            action = japanese ? L"この画面と SteamVR を閉じ、インストーラーで登録してください。"
+                              : L"Close this window and SteamVR, then register PoseAnchor using the installer.";
+            break;
+        case OverviewState::RegisteredElsewhere:
+            text.mainInstruction = japanese ? L"別の PoseAnchor が登録されています" : L"A different PoseAnchor copy is registered";
+            action = japanese ? L"スタートメニューからインストール済みのステータス画面を開いてください。"
+                              : L"Open the installed status app from the Start menu.";
+            break;
+        case OverviewState::ConflictingRegistrations:
+            text.mainInstruction = japanese ? L"登録が重複・競合しています" : L"Registrations conflict";
+            action = japanese ? L"詳細と README で登録先を確認後、この画面と SteamVR を閉じ、インストーラーで修復してください。"
+                              : L"Check the paths and README, close this window and SteamVR, then repair with the installer.";
+            break;
+        case OverviewState::BrokenInstallation:
+            text.mainInstruction = japanese ? L"インストールが不完全です" : L"Installation is incomplete";
+            action = japanese ? L"この画面と SteamVR を閉じ、インストーラーを再実行してください。"
+                              : L"Close this window and SteamVR, then run the installer again.";
+            break;
+        case OverviewState::InspectionIncomplete:
+        case OverviewState::UnknownRegistration:
+            text.mainInstruction = japanese ? L"登録状態を確認できません" : L"Registration could not be verified";
+            action = japanese ? L"詳細で確認対象のパスを確認し、README の登録手順を参照してください。"
+                              : L"Inspect the paths below and see the README registration instructions.";
+            break;
+        case OverviewState::DriverUnavailable:
+            text.mainInstruction = japanese ? L"ドライバーの読み込みを確認できません" : L"Driver load could not be verified";
+            action = japanese ? L"起動直後は少し待って再確認してください。続く場合はログと README を確認してください。"
+                              : L"If SteamVR just started, wait and refresh. Otherwise check the log and README.";
+            break;
+        case OverviewState::HookUnavailable:
+            text.mainInstruction = japanese ? L"補正の準備を確認できません" : L"Filtering readiness could not be verified";
+            action = japanese ? L"ログと README を確認してください。設定変更後は SteamVR の再起動が必要です。"
+                              : L"Check the log and README. Settings changes require restarting SteamVR.";
+            break;
     }
 
     std::wostringstream content;
+    content << action << L"\n\n";
     content << (japanese ? L"SteamVR登録: " : L"SteamVR registration: ")
             << registrationLabel(registration, japanese) << L'\n';
-    if (registration.state == RegistrationState::InspectionIncomplete) {
-        if (registration.skippedRemotePath) {
-            content << (japanese
-                ? L"  ネットワーク上の登録先は開かず、稼働判定から除外しました。\n"
-                : L"  Network registration paths were not opened and cannot prove active status.\n");
-        }
-        if (registration.skippedUnsupportedPath) {
-            content << (japanese
-                ? L"  読み取れない登録先があるため、登録状態を確定していません。\n"
-                : L"  An unreadable registration path kept the result unverified.\n");
-        }
-    }
 
-    if (runtime.process.running) {
+    if (!runtime.process.inspectionComplete) {
+        content << (japanese ? L"SteamVR: 確認できません\nドライバー読込: —\n補正の準備: —\n"
+                             : L"SteamVR: Could not verify\nDriver loaded: —\nFiltering ready: —\n");
+    } else if (runtime.process.running) {
         content << (japanese ? L"SteamVR: 実行中" : L"SteamVR: Running");
-        if (runtime.process.processId != 0) {
-            content << L" (PID " << runtime.process.processId;
-            if (runtime.process.start) {
-                content << (japanese ? L"、開始 " : L", started ")
-                        << formatTimestamp(*runtime.process.start, true);
-            }
-            content << L')';
-        }
         content << L'\n';
         content << (japanese ? L"ドライバー読込: " : L"Driver loaded: ")
                 << evidenceLabel(runtime.loaded, japanese);
@@ -813,7 +963,7 @@ void appendEventSummary(std::wostringstream& stream, const RuntimeStatus& runtim
             content << L" (v" << utf8ToWide(runtime.session.version) << L')';
         }
         content << L'\n';
-        content << (japanese ? L"Pose hook: " : L"Pose hook: ")
+        content << (japanese ? L"補正の準備: " : L"Filtering ready: ")
                 << evidenceLabel(runtime.hook, japanese);
         if (runtime.session.filterDisabled) {
             content << (japanese ? L"（設定で無効）" : L" (disabled in settings)");
@@ -823,17 +973,24 @@ void appendEventSummary(std::wostringstream& stream, const RuntimeStatus& runtim
         content << L'\n';
     } else {
         content << (japanese ? L"SteamVR: 停止中\n" : L"SteamVR: Stopped\n")
-                << (japanese ? L"ドライバー読込: —\nPose hook: —\n"
-                             : L"Driver loaded: —\nPose hook: —\n");
+                << (japanese ? L"ドライバー読込: —\n補正の準備: —\n"
+                             : L"Driver loaded: —\nFiltering ready: —\n");
     }
     content << L'\n';
-    appendTrackerSummary(content, runtime, japanese);
-    content << L'\n';
-    appendEventSummary(content, runtime, japanese);
+    if (runtime.process.inspectionComplete && runtime.process.running && runtime.loaded == EvidenceState::Yes) {
+        content << (japanese ? L"Tracker 認識履歴（この起動中）: " : L"Trackers recognized this session: ")
+                << runtime.session.trackers.size();
+        if (runtime.session.trackersTruncated || !runtime.completeSessionCoverage) content << L'+';
+        content << (japanese ? L"\n現在の接続数・追跡品質を示すものではありません。\n"
+                            : L"\nThis is not a live connection count or tracking-quality measure.\n");
+    }
 
-    if (runtime.process.running) {
+    if (runtime.process.inspectionComplete && runtime.process.running) {
         content << L'\n';
-        if (!runtime.log.exists) {
+        if (runtime.logPath.empty()) {
+            content << (japanese ? L"ログ: 使用中のローカルログ保存先を確認できません"
+                                 : L"Log: Could not verify the configured local log location");
+        } else if (!runtime.log.exists) {
             content << (japanese ? L"ログ: vrserver.txt が見つかりません"
                                  : L"Log: vrserver.txt was not found");
         } else if (!runtime.log.opened) {
@@ -856,6 +1013,23 @@ void appendEventSummary(std::wostringstream& stream, const RuntimeStatus& runtim
     text.content = content.str();
 
     std::wostringstream details;
+    if (runtime.process.inspectionComplete && runtime.process.running && runtime.process.processId != 0) {
+        details << L"SteamVR PID: " << runtime.process.processId;
+        if (runtime.process.start) details << L" / " << formatTimestamp(*runtime.process.start, true);
+        details << L"\n\n";
+    }
+    appendTrackerSummary(details, runtime, japanese);
+    details << L'\n';
+    appendEventSummary(details, runtime, japanese);
+    details << (japanese
+        ? L"Hold = 短時間予測 / Recovery = 復帰 / Lost = 追跡喪失\nログ省略により実際の遷移数はこれ以上の場合があります。補正効果の比較値ではありません。\n\n"
+        : L"Hold = brief prediction / Recovery = reacquisition / Lost = tracking lost\nLog throttling can omit transitions. Counts are minimums, not a measure of improvement.\n\n");
+    if (registration.skippedRemotePath) details << (japanese
+        ? L"ネットワーク上の登録先は安全のため開いていません。\n"
+        : L"Network registration paths were not opened for safety.\n");
+    if (registration.skippedUnsupportedPath) details << (japanese
+        ? L"読み取れない登録先があるため登録状態は未確定です。\n"
+        : L"Unreadable registration paths leave registration unverified.\n");
     details << (japanese ? L"確認対象:\n" : L"Inspected paths:\n")
             << registration.expectedRoot.native();
     if (!registration.registrationFile.empty()) {
@@ -900,14 +1074,50 @@ void openPath(HWND owner, const std::filesystem::path& path, bool japanese) {
     if (result <= 32) showOpenError(owner, japanese);
 }
 
+void configureDialog(DialogContext& context, bool refreshed = false);
+
+// Take a new snapshot only on explicit user action. No timer, worker thread or
+// log buffer survives into the idle dialog. Build all fallible data first so a
+// failed refresh leaves the previous snapshot and its timestamp intact.
+void refreshStatus(DialogContext& context, HWND window = nullptr) {
+    const auto registration = inspectRegistration(context.driverRoot);
+    const auto runtime = inspectRuntime();
+    auto nextText = buildUiText(registration, runtime, context.japanese);
+    auto nextLogPath = runtime.logPath;
+    const bool nextLogAvailable = fileExists(nextLogPath);
+    const bool nextReadmeAvailable = fileExists(context.readmePath);
+    // Keep the previous page's text alive until synchronous navigation finishes.
+    const auto previousText = std::move(context.text);
+    context.text = std::move(nextText);
+    context.logPath = std::move(nextLogPath);
+    context.logAvailable = nextLogAvailable;
+    context.readmeAvailable = nextReadmeAvailable;
+    configureDialog(context, window != nullptr);
+    if (window) SendMessageW(window, TDM_NAVIGATE_PAGE, 0,
+                             reinterpret_cast<LPARAM>(&context.config));
+}
+
 HRESULT CALLBACK taskDialogCallback(HWND window, UINT notification,
                                     WPARAM parameter, LPARAM, LONG_PTR data) {
     auto* context = reinterpret_cast<DialogContext*>(data);
     if (!context) return S_OK;
-    if (notification == TDN_CREATED) {
+    if (notification == TDN_CREATED || notification == TDN_NAVIGATED) {
         SendMessageW(window, TDM_ENABLE_BUTTON, kOpenLogButton, context->logAvailable);
         SendMessageW(window, TDM_ENABLE_BUTTON, kOpenReadmeButton, context->readmeAvailable);
+    } else if (notification == TDN_EXPANDO_BUTTON_CLICKED) {
+        context->expanded = parameter != 0;
     } else if (notification == TDN_BUTTON_CLICKED) {
+        if (parameter == kRefreshButton) {
+            try {
+                refreshStatus(*context, window);
+            } catch (...) {
+                MessageBoxW(window, context->japanese
+                    ? L"再確認できませんでした。表示中の情報と確認時刻は前回のものです。"
+                    : L"Refresh failed. The displayed information and timestamp are from the previous check.",
+                    L"PoseAnchor", MB_OK | MB_ICONERROR);
+            }
+            return S_FALSE;
+        }
         if (parameter == kOpenLogButton) {
             try {
                 openPath(window, context->logPath, context->japanese);
@@ -928,40 +1138,45 @@ HRESULT CALLBACK taskDialogCallback(HWND window, UINT notification,
     return S_OK;
 }
 
-int showStatusDialog(const UiText& text, DialogContext& context) {
-    const std::array<TASKDIALOG_BUTTON, 2> buttons{{
+void configureDialog(DialogContext& context, bool refreshed) {
+    const auto& text = context.text;
+    context.buttons = {{
+        {kRefreshButton, text.refresh.c_str()},
         {kOpenLogButton, text.openLog.c_str()},
         {kOpenReadmeButton, text.openReadme.c_str()},
     }};
 
-    TASKDIALOGCONFIG config{};
+    auto& config = context.config;
+    config = {};
     config.cbSize = sizeof(config);
     config.hInstance = GetModuleHandleW(nullptr);
     config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_SIZE_TO_CONTENT |
                      TDF_EXPAND_FOOTER_AREA;
+    if (context.expanded) config.dwFlags |= TDF_EXPANDED_BY_DEFAULT;
     config.dwCommonButtons = TDCBF_CLOSE_BUTTON;
     config.pszWindowTitle = text.title.c_str();
     config.pszMainIcon = text.warning ? TD_WARNING_ICON : TD_INFORMATION_ICON;
     config.pszMainInstruction = text.mainInstruction.c_str();
     config.pszContent = text.content.c_str();
-    config.cButtons = static_cast<UINT>(buttons.size());
-    config.pButtons = buttons.data();
-    config.nDefaultButton = IDCLOSE;
+    config.cButtons = static_cast<UINT>(context.buttons.size());
+    config.pButtons = context.buttons.data();
+    config.nDefaultButton = refreshed ? kRefreshButton : IDCLOSE;
     config.pszExpandedInformation = text.details.c_str();
-    config.pszExpandedControlText = context.japanese ? L"確認したパスを隠す"
-                                                     : L"Hide inspected paths";
-    config.pszCollapsedControlText = context.japanese ? L"確認したパスを表示"
-                                                      : L"Show inspected paths";
+    config.pszExpandedControlText = context.japanese ? L"詳細を隠す" : L"Hide details";
+    config.pszCollapsedControlText = context.japanese ? L"詳細を表示" : L"Show details";
     config.pszFooter = text.footer.c_str();
     config.pfCallback = taskDialogCallback;
     config.lpCallbackData = reinterpret_cast<LONG_PTR>(&context);
+}
 
+int showStatusDialog(DialogContext& context) {
     int selected{};
-    const HRESULT result = TaskDialogIndirect(&config, &selected, nullptr, nullptr);
+    const HRESULT result = TaskDialogIndirect(&context.config, &selected, nullptr, nullptr);
     if (SUCCEEDED(result)) return EXIT_SUCCESS;
 
     // This fallback is only for systems where the standard Task Dialog API is
     // unavailable or damaged. Status remains readable and the process still exits.
+    const auto& text = context.text;
     const std::wstring fallback = text.mainInstruction + L"\n\n" + text.content;
     MessageBoxW(nullptr, fallback.c_str(), text.title.c_str(),
                 MB_OK | (text.warning ? MB_ICONWARNING : MB_ICONINFORMATION));
@@ -979,17 +1194,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     try {
         const std::filesystem::path executable = executablePath();
         const std::filesystem::path driverRoot = findDriverRoot(executable);
-        const RegistrationInfo registration = inspectRegistration(driverRoot);
-        const RuntimeStatus runtime = inspectRuntime();
-        const UiText text = buildUiText(registration, runtime, japanese);
-
         DialogContext context;
-        context.logPath = runtime.logPath;
+        context.driverRoot = driverRoot;
         context.readmePath = driverRoot / L"README.md";
-        context.logAvailable = fileExists(context.logPath);
-        context.readmeAvailable = fileExists(context.readmePath);
         context.japanese = japanese;
-        return showStatusDialog(text, context);
+        refreshStatus(context);
+        return showStatusDialog(context);
     } catch (...) {
         MessageBoxW(nullptr,
                     japanese ? L"ステータス情報の読み取り中に予期しないエラーが発生しました。"

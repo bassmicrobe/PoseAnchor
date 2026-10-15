@@ -56,6 +56,32 @@ struct PhaseResult {
     std::uint64_t allocations{};
 };
 
+struct TickPhaseResult {
+    double nanosecondsPerTick{};
+    std::uint64_t outputs{};
+    std::uint64_t invalidOutputs{};
+    std::uint64_t allocations{};
+};
+
+TickPhaseResult timeLostTicks(PoseFilter& filter, std::int64_t timeNs) {
+    TickPhaseResult result{};
+    const std::uint64_t allocationsBefore = allocationCount.load(std::memory_order_relaxed);
+    const auto started = std::chrono::steady_clock::now();
+    for (int i = 0; i < kMeasuredSamples; ++i) {
+        timeNs += 2'000'000;
+        const auto output = filter.tick(timeNs);
+        result.outputs += output.has_value() ? 1u : 0u;
+        result.invalidOutputs += output && !output->poseValid &&
+            output->state == FilterState::Lost && output->modified ? 1u : 0u;
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    result.nanosecondsPerTick = static_cast<double>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()) /
+        static_cast<double>(kMeasuredSamples);
+    result.allocations = allocationCount.load(std::memory_order_relaxed) - allocationsBefore;
+    return result;
+}
+
 // Timing wraps only PoseFilter::push; the input sequence is pre-generated.
 PhaseResult timePushes(PoseFilter& filter, const std::vector<PoseSample>& samples) {
     PhaseResult result{};
@@ -127,6 +153,23 @@ int main() {
                                     diagnostics.recoveryEntries > 0 &&
                                     disturbed.allocations == 0;
 
+    // Phase 3: after a tracker has been lost, watchdog updates must keep emitting
+    // invalid poses without allocating or repeating the Hold prediction work.
+    PoseFilter lostFilter;
+    std::int64_t lostTimeNs = 0;
+    for (int i = 0; i < kWarmupSamples; ++i) {
+        lostTimeNs += kStepNs;
+        (void)lostFilter.push(makeSample(lostTimeNs, static_cast<double>(lostTimeNs) * 1e-9));
+    }
+    lostTimeNs += 160'000'000;
+    const auto firstLost = lostFilter.tick(lostTimeNs);
+    const TickPhaseResult lostTicks = timeLostTicks(lostFilter, lostTimeNs);
+    const std::uint64_t lostEntries = lostFilter.diagnostics().lostEntries;
+    const bool lostTicksStable = firstLost && firstLost->state == FilterState::Lost &&
+                                lostTicks.outputs == kMeasuredSamples &&
+                                lostTicks.invalidOutputs == kMeasuredSamples &&
+                                lostTicks.allocations == 0 && lostEntries == 1;
+
     std::cout << std::fixed << std::setprecision(2)
               << "samples_per_phase=" << kMeasuredSamples << '\n'
               << "tracking_ns_per_sample=" << tracking.nanosecondsPerSample << '\n'
@@ -140,7 +183,12 @@ int main() {
               << "disturbed_hold_entries=" << diagnostics.holdEntries << '\n'
               << "disturbed_recovery_entries=" << diagnostics.recoveryEntries << '\n'
               << "disturbed_rejected_samples=" << diagnostics.rejectedSamples << '\n'
+              << "lost_tick_ns_per_tick=" << lostTicks.nanosecondsPerTick << '\n'
+              << "lost_tick_outputs=" << lostTicks.outputs << '\n'
+              << "lost_tick_invalid_outputs=" << lostTicks.invalidOutputs << '\n'
+              << "lost_tick_allocations=" << lostTicks.allocations << '\n'
+              << "lost_tick_lost_entries=" << lostEntries << '\n'
               << "pose_filter_bytes=" << sizeof(PoseFilter) << '\n'
               << "decision_metrics_bytes=" << sizeof(FilterDecisionMetrics) << '\n';
-    return trackingClean && disturbedExercised ? 0 : 1;
+    return trackingClean && disturbedExercised && lostTicksStable ? 0 : 1;
 }

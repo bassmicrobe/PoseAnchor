@@ -63,6 +63,8 @@ void DeviceRegistry::reset() {
     for (auto& value : kinds_) value.store(DeviceKind::Unknown, std::memory_order_relaxed);
     pendingMask_.store(0, std::memory_order_relaxed);
     for (auto& value : metadata_) value = {};
+    retryAfter_ = {};
+    retryAttempts_ = {};
 }
 
 DeviceKind DeviceRegistry::kind(std::uint32_t index) const noexcept {
@@ -80,11 +82,20 @@ void DeviceRegistry::requestClassification(std::uint32_t index) noexcept {
 
 void DeviceRegistry::classifyPending() {
     if (pendingMask_.load(std::memory_order_acquire) == 0) return;
+    classifyPendingAt(std::chrono::steady_clock::now());
+}
+
+void DeviceRegistry::classifyPendingAt(std::chrono::steady_clock::time_point now) {
     const std::uint64_t pending = pendingMask_.exchange(0, std::memory_order_acq_rel);
+    std::uint64_t deferred = 0;
     for (std::uint32_t index = 0; index < vr::k_unMaxTrackedDeviceCount; ++index) {
         const std::uint64_t bit = std::uint64_t{1} << index;
         if ((pending & bit) == 0) continue;
         if (kinds_[index].load(std::memory_order_acquire) != DeviceKind::Unknown) continue;
+        if (now < retryAfter_[index]) {
+            deferred |= bit;
+            continue;
+        }
 
         DeviceMetadata metadata{};
         bool retry = false;
@@ -92,10 +103,17 @@ void DeviceRegistry::classifyPending() {
         if (result != DeviceKind::Unknown) {
             metadata_[index] = std::move(metadata);
             kinds_[index].store(result, std::memory_order_release);
-        } else if (retry) {
-            pendingMask_.fetch_or(bit, std::memory_order_release);
+        } else {
+            // Optional properties may remain UnknownProperty for the entire
+            // session. Retrying every RunFrame would repeatedly allocate strings
+            // and query SteamVR for unsupported generic trackers indefinitely.
+            const int delayMs = std::min(1000, 100 << retryAttempts_[index]);
+            retryAfter_[index] = now + std::chrono::milliseconds(delayMs);
+            retryAttempts_[index] = std::min<std::uint8_t>(4, retryAttempts_[index] + 1);
+            if (retry) deferred |= bit;
         }
     }
+    if (deferred != 0) pendingMask_.fetch_or(deferred, std::memory_order_release);
 }
 
 const DeviceMetadata& DeviceRegistry::metadata(std::uint32_t index) const noexcept {

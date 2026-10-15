@@ -21,6 +21,14 @@ bool usable(Quat q) {
     return q.finite() && n2 >= 0.25 && n2 <= 2.25;
 }
 
+template <typename Transform>
+bool identicalComponents(const Transform& a, const Transform& b) {
+    return a.rotation.w == b.rotation.w && a.rotation.x == b.rotation.x &&
+           a.rotation.y == b.rotation.y && a.rotation.z == b.rotation.z &&
+           a.translation.x == b.translation.x && a.translation.y == b.translation.y &&
+           a.translation.z == b.translation.z;
+}
+
 }  // namespace
 
 bool PoseAdapter::readWorldFromDriver(const vr::DriverPose_t& pose,
@@ -36,6 +44,10 @@ bool PoseAdapter::readWorldFromDriver(const vr::DriverPose_t& pose,
 }
 
 bool PoseAdapter::transformChanged(const WorldFromDriver& a, const WorldFromDriver& b) {
+    // Calibration transforms normally stay exactly constant across callbacks.
+    // Avoid normalization/sqrt/acos for that case; any changed component still
+    // uses the original tolerances, including equivalent q/-q orientations.
+    if (identicalComponents(a, b)) return false;
     return (a.translation - b.translation).norm() > 0.001 ||
            angularDistance(a.rotation, b.rotation) > 0.0017453292519943296;  // 0.1 degrees
 }
@@ -53,6 +65,7 @@ bool PoseAdapter::readDriverFromHead(const vr::DriverPose_t& pose,
 }
 
 bool PoseAdapter::transformChanged(const DriverFromHead& a, const DriverFromHead& b) {
+    if (identicalComponents(a, b)) return false;
     return (a.translation - b.translation).norm() > 0.001 ||
            angularDistance(a.rotation, b.rotation) > 0.0017453292519943296;  // 0.1 degrees
 }

@@ -59,8 +59,8 @@ SteamVRへ報告する`DriverPose_t`をMinHookで横取りし、Vive Trackerの�
 ### 安全設計
 
 フィルタ例外、未識別デバイス、不正なtransformなど判断できない状況では、必ず
-元のposeを素通しします（fail-open）。補正はすべて絶対上限付きで、修復・補間が
-実際の動きより大きな動きを合成することはありません。
+元のposeを素通しします（fail-open）。欠測時の予測には時間・移動量・回転量の上限が
+あります。ただし独立した位置基準がないため、予測が実際の動きと一致する保証はありません。
 
 ## 重要な制約
 
@@ -100,6 +100,9 @@ Hold軌道から0.75 m / 90°を超える位置で再捕捉した場合は、誤
 
 CMakeはOpenVR v2.15.6とMinHook v1.3.4をGitのcommit hashで固定取得します。
 成功すると`build\pose_anchor\`にSteamVRへ登録できる配布物が生成されます。
+リンク時の出力は`build\<構成>\pose_anchor\`に分離し、選択した構成を毎回
+`build\pose_anchor\`へ配置します。インストーラービルドは`build-info.json`の
+バージョンと構成を検査し、`-SkipBuild`でもDebug版などの取り違えを拒否します。
 
 配布用のGUIインストーラーを作る場合は、ビルドPCに
 [Inno Setup 6](https://jrsoftware.org/isinfo.php)も入れて次を実行します。
@@ -111,8 +114,9 @@ CMakeはOpenVR v2.15.6とMinHook v1.3.4をGitのcommit hashで固定取得しま
 `dist\PoseAnchor-Setup-0.1.0.exe`が生成されます。利用者側にVisual Studio、CMake、
 Inno Setup、PowerShell操作は不要です。
 
-上記はローカル検証用の未署名ビルドです。公開配布ではコード署名証明書のSHA-1 thumbprintを
-指定します。driver DLLと状態画面を先に署名し、Inno SetupがSetup本体と同梱
+上記は未署名ビルドです。署名なしでも使用・配布できますが、Windowsの警告や端末の
+実行ポリシーにより起動が制限される場合があります。署名する場合はコード署名証明書の
+SHA-1 thumbprintを指定します。driver DLLと状態画面を先に署名し、Inno SetupがSetup本体と同梱
 アンインストーラーを署名してから最終チェックサムを生成します。
 
 ```powershell
@@ -121,8 +125,12 @@ Inno Setup、PowerShell操作は不要です。
 
 ### 現在の検証状況
 
-- GitHub Actions CIがpush毎にMSVCビルド+全テストと、コアフィルタのclang
-  ASan/UBSanビルド+テストを実行
+今回の修正内容・自動検証・残っている実機確認は
+[リリース監査記録](docs/release-audit-2026-09-26.md)に記載しています。
+以下の実機測定・インストール試験は過去版での結果で、今回のバイナリの実機再試験を代替しません。
+
+- GitHub Actions CIはpush毎にMSVCビルド+全テスト、構成切替時の配布物検査、
+  インストーラー生成と、コアフィルタ・状態パーサーのclang ASan/UBSanビルド+テストを実行する設定
 - フィルタの合成回帰テスト、警告をエラー扱いしたビルド、UndefinedBehaviorSanitizerは通過済み
 - OpenVR / MinHookの固定ヘッダーに対するWindows x64向け全ドライバ翻訳単位のコンパイルは通過済み
 - このソース配布には未検証の代替ABI製DLLを含めていません
@@ -178,11 +186,14 @@ Hold/Recovery/Lostを確認できます。この画面は必要なときだけ�
 
 - 通常pose経路は固定長POD状態だけを更新し、ヒープ確保、ファイルI/O、常時ログを行いません。
 - フィルタはVive Trackerと確定したデバイスにだけ遅延生成し、最大64デバイス分を先に確保しません。
-- pose転送先が変わらない通常時はatomic fast pathを使い、経路mutexを取りません。
+- 対象外デバイスはフィルタや経路mutexを通しません。対象Trackerはデバイス単位で
+  通常poseとwatchdog転送を直列化し、古い補間結果が新しいposeを上書きすることを防ぎます。
 - 詳細診断は状態遷移時だけ生成し、同種イベントを1秒単位で抑制します。
 - 分類待ちは64個のatomicを毎frame更新せず、単一bit maskが空なら即終了します。
 - `RunFrame`のwatchdogは有効時だけ固定64スロットを走査し、Tracker以外はatomic判定だけで終了します。
 - リアルタイム経路にAIランタイム、GPU処理、常駐UI、ネットワーク通信は入れません。
+
+以下は監査前の版で行った参考計測です。今回の修正版の値は上記の監査記録を参照してください。
 
 オンデマンド状態画面は20回の実機計測で起動中央値75.25 ms、表示中のPrivateメモリ中央値
 3.01 MiB（Working set 16.86 MiB）でした。全20回で画面を閉じた後の残存プロセスは0です。

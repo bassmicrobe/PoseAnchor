@@ -6,12 +6,16 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   windows-msvc:
     name: Windows x64 (MSVC, driver + tests)
-    runs-on: windows-latest
+    # windows-latest now provides VS 2026, but our preset targets VS 2022.
+    runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Configure
         run: cmake --preset vs2022-x64
@@ -27,11 +31,20 @@ jobs:
         # CI runners are not meaningful and are not asserted.
         run: .\build\Release\pose_anchor_benchmark.exe
 
+      - name: Driver hot-path benchmark smoke run
+        run: .\build\Release\pose_anchor_device_registry_benchmark.exe
+
+      - name: Verify configuration switching does not mix package binaries
+        run: .\tests\package_staging_tests.ps1
+
+      - name: Build unsigned installer and checksum
+        run: .\scripts\build-installer.ps1 -SkipBuild
+
   linux-sanitizers:
     name: Core filter (clang, ASan + UBSan)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Configure
         run: >

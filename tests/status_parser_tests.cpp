@@ -35,6 +35,20 @@ void timestampTests() {
            "invalid calendar date is rejected");
     expect(!pose_anchor::status::parseSteamVrTimestamp("not a SteamVR line"),
            "non-log line is rejected");
+    for (const auto* malformed : {
+             "Sun Aug 23 2026 19:27:59.",
+             "Sun Aug 23 2026 19:27:59.3",
+             "Sun Aug 23 2026 19:27:59.35",
+             "Sun Aug 23 2026 19:27:59.3540 [Info] - message",
+             "Sun Aug 23 2026 19:27:590 [Info] - message",
+             "Sun Aug 23 2026 -0:27:59.354 [Info] - message",
+             "Sun Aug 23 2026 19:27:59.-00 [Info] - message"}) {
+        expect(!pose_anchor::status::parseSteamVrTimestamp(malformed),
+               "partial or malformed timestamp fields are rejected");
+    }
+    expect(pose_anchor::status::parseSteamVrTimestamp(
+               "Sun Aug  3 2026 19:27:59 [Info] - message").has_value(),
+           "space-padded day and whole-second timestamp remain supported");
 }
 
 void activeSessionTests() {
@@ -182,6 +196,56 @@ void resourceBoundTests() {
     const auto result = pose_anchor::status::parseVrServerLog(log);
     expect(result.trackers.size() == 64 && result.trackersTruncated,
            "tracker display input is capped at OpenVR's 64-device limit");
+
+    const std::string oversizedVersion =
+        "Sun Aug 23 2026 19:27:59.000 [Info] - pose_anchor: [PoseAnchor] "
+        "IVRServerDriverHost_006 pose hook installed\n"
+        "Sun Aug 23 2026 19:27:59.001 [Info] - pose_anchor: [PoseAnchor] PoseAnchor " +
+        std::string(1024 * 1024, 'X') +
+        " loaded (Vive Tracker only, normal poses pass through)\n";
+    const auto oversized = pose_anchor::status::parseVrServerLog(oversizedVersion);
+    expect(!oversized.loaded && !oversized.hookInstalled && oversized.version.empty(),
+           "oversized version does not allocate retained text or claim a successful load");
+}
+
+void recentEventTests() {
+    std::string log =
+        "Sun Aug 23 2026 19:27:59.001 [Info] - pose_anchor: [PoseAnchor] "
+        "PoseAnchor 0.1.0 loaded (Vive Tracker only, normal poses pass through)\n";
+    for (int index = 0; index < 20; ++index) {
+        log += "Sun Aug 23 2026 19:28:00.100 [Info] - pose_anchor: [PoseAnchor] "
+               "tracker LHR-LONG-SERIAL-" + std::to_string(index) +
+               " tracking -> hold reasons=0x81 suppressed=" + std::to_string(index) + "\n";
+    }
+    for (const std::size_t limit : {0u, 1u, 3u, 5u, 20u, 25u}) {
+        ParseOptions options;
+        options.maxRecentEvents = limit;
+        const auto result = pose_anchor::status::parseVrServerLog(log, options);
+        const std::size_t retained = limit < 20 ? limit : 20;
+        expect(result.holdTransitions == 210, "ring retention leaves aggregate counts intact");
+        expect(result.recentEvents.size() == retained, "ring retention respects requested limit");
+        for (std::size_t index = 0; index < result.recentEvents.size(); ++index) {
+            const auto& event = result.recentEvents[index];
+            const auto expected = 20 - retained + index;
+            expect(event.serial == "LHR-LONG-SERIAL-" + std::to_string(expected) &&
+                       event.suppressed == expected && event.reasons == 0x81 &&
+                       event.fromState == "tracking" && event.toState == "hold",
+                   "ring wrap preserves chronological order and all event fields");
+        }
+    }
+
+    log += "Sun Aug 23 2026 19:28:01.000 [Info] - pose_anchor: [PoseAnchor] PoseAnchor unloaded\n"
+           "Sun Aug 23 2026 19:28:02.000 [Info] - pose_anchor: [PoseAnchor] "
+           "PoseAnchor 0.1.1 loaded (Vive Tracker only, normal poses pass through)\n"
+           "Sun Aug 23 2026 19:28:03.000 [Info] - pose_anchor: [PoseAnchor] "
+           "tracker LHR-NEW hold -> tracking reasons=0x0\n";
+    ParseOptions options;
+    options.maxRecentEvents = 3;
+    const auto reloaded = pose_anchor::status::parseVrServerLog(log, options);
+    expect(reloaded.recentEvents.size() == 1 &&
+               reloaded.recentEvents.front().serial == "LHR-NEW" &&
+               reloaded.trackingTransitions == 1 && reloaded.holdTransitions == 0,
+           "reload resets a previously wrapped ring and its aggregate counts");
 }
 
 void jsonTests() {
@@ -219,6 +283,31 @@ void jsonTests() {
                R"({"name":"pose_anchor","name":"duplicate"})", "name").status ==
                JsonLookupStatus::Malformed,
            "duplicate security-relevant member is rejected");
+    const auto logs = pose_anchor::status::findJsonStringArray(
+        R"({"runtime":["D:\\SteamLibrary\\steamapps\\common\\SteamVR"],"log":["C:\\Steam\\logs"]})",
+        "log");
+    expect(logs.status == JsonLookupStatus::Found && logs.values.size() == 1 &&
+               logs.values.front() == "C:\\Steam\\logs",
+           "configured logs remain distinct from a secondary SteamVR library");
+    expect(pose_anchor::status::findJsonString("{\f\"name\":\"pose_anchor\"}", "name").status ==
+               JsonLookupStatus::Malformed,
+           "non-JSON whitespace does not validate a malformed manifest");
+    const auto utf8 = pose_anchor::status::findJsonString(
+        "{\"name\":\"\xE6\x97\xA5\xF0\x9F\x98\x80\"}", "name");
+    expect(utf8.status == JsonLookupStatus::Found && utf8.value == "\xE6\x97\xA5\xF0\x9F\x98\x80",
+           "valid raw UTF-8 including a supplementary character is preserved");
+    for (const auto* invalid : {"\x80", "\xC0\xAF", "\xE0\x80\x80", "\xED\xA0\x80",
+                                "\xF0\x80\x80\x80", "\xF4\x90\x80\x80", "\xF5\x80\x80\x80",
+                                "\xE6\x97", "\xE6x"}) {
+        expect(pose_anchor::status::findJsonString(
+                   std::string("{\"name\":\"") + invalid + "\"}", "name").status ==
+                   JsonLookupStatus::Malformed,
+               "invalid raw UTF-8 in requested members is rejected");
+        expect(pose_anchor::status::findJsonString(
+                   std::string("{\"name\":\"pose_anchor\",\"other\":\"") + invalid + "\"}",
+                   "name").status == JsonLookupStatus::Malformed,
+               "invalid raw UTF-8 in skipped members invalidates the whole document");
+    }
 
     std::string tooDeep = "{\"other\":";
     tooDeep.append(65, '[');
@@ -296,6 +385,7 @@ int main() {
     activeSessionTests();
     staleAndFailureTests();
     resourceBoundTests();
+    recentEventTests();
     jsonTests();
     pathTests();
 

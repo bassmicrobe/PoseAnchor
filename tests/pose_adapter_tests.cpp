@@ -151,11 +151,45 @@ void testModifiedPoseRoundTripAndValidation() {
     CHECK(!PoseAdapter::readDriverFromHead(pose, changed));
 }
 
+template <typename Transform>
+void testTransformChangeTolerances() {
+    Transform original{};
+    original.rotation = fromRotationVector({0.1, 0.7, -0.2});
+    original.translation = {1.0, -0.5, 2.0};
+    CHECK(!PoseAdapter::transformChanged(original, original));
+
+    Transform changed = original;
+    changed.rotation = -original.rotation;
+    CHECK(!PoseAdapter::transformChanged(original, changed));
+
+    changed = original;
+    changed.translation.x += 0.00099;
+    CHECK(!PoseAdapter::transformChanged(original, changed));
+    changed = original;
+    changed.translation.y += 0.00101;
+    CHECK(PoseAdapter::transformChanged(original, changed));
+    changed = original;
+    changed.translation.x += 0.0008;
+    changed.translation.z += 0.0008;
+    CHECK(PoseAdapter::transformChanged(original, changed));
+
+    constexpr double radiansPerDegree = 3.141592653589793 / 180.0;
+    changed = original;
+    changed.rotation = fromRotationVector({0.099 * radiansPerDegree, 0.0, 0.0}) *
+                       original.rotation;
+    CHECK(!PoseAdapter::transformChanged(original, changed));
+    changed.rotation = fromRotationVector({0.0, 0.101 * radiansPerDegree, 0.0}) *
+                       original.rotation;
+    CHECK(PoseAdapter::transformChanged(original, changed));
+}
+
 }  // namespace
 
 int main() {
     testNonIdentityDriverFromHeadRoundTrip();
     testModifiedPoseRoundTripAndValidation();
+    testTransformChangeTolerances<WorldFromDriver>();
+    testTransformChangeTolerances<DriverFromHead>();
     if (failures != 0) {
         std::cerr << failures << " test assertion(s) failed\n";
         return EXIT_FAILURE;

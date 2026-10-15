@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <thread>
 
 // The build stamps the version from CMakeLists.txt (the single source of truth).
 #ifndef POSE_ANCHOR_VERSION
@@ -53,6 +54,8 @@ vr::EVRInitError ServerProvider::Init(vr::IVRDriverContext* context) {
         slot.lastState = FilterState::Cold;
         slot.driverFromHeadWarningLogged = false;
         slot.identifiedLogged = false;
+        slot.worldTransformLogRate = {};
+        slot.headTransformLogRate = {};
         slot.hasDriverPose = false;
         slot.lastDriverPose = {};
         ++slot.generation;
@@ -77,7 +80,12 @@ vr::EVRInitError ServerProvider::Init(vr::IVRDriverContext* context) {
 }
 
 void ServerProvider::Cleanup() {
-    active_.store(false, std::memory_order_release);
+    active_.store(false, std::memory_order_seq_cst);
+    // RunFrame also uses the driver context (property lookup and logging), not
+    // only the hook object. Drain it before tearing down either resource.
+    while (runFramesInFlight_.load(std::memory_order_seq_cst) != 0) {
+        std::this_thread::yield();
+    }
     if (hooks_) hooks_->remove();
     for (auto& slot : slots_) {
         std::scoped_lock lock(slot.mutex);
@@ -90,11 +98,19 @@ void ServerProvider::Cleanup() {
 const char* const* ServerProvider::GetInterfaceVersions() { return vr::k_InterfaceVersions; }
 
 void ServerProvider::RunFrame() {
+    if (!active_.load(std::memory_order_acquire)) return;
+    // Without a hook no callback can request classification or need watchdog
+    // output, so the disabled steady state is a single atomic read.
+    if (!filterEnabled_ || !hooks_) return;
+    struct FrameRundown {
+        std::atomic_uint32_t& count;
+        explicit FrameRundown(std::atomic_uint32_t& value) noexcept : count(value) {
+            count.fetch_add(1, std::memory_order_seq_cst);
+        }
+        ~FrameRundown() { count.fetch_sub(1, std::memory_order_release); }
+    } frameRundown(runFramesInFlight_);
+    if (!active_.load(std::memory_order_seq_cst)) return;
     try {
-        if (!active_.load(std::memory_order_acquire)) return;
-        // Without a hook no callback can request classification or need watchdog
-        // output, so the disabled steady state is a single atomic read.
-        if (!filterEnabled_ || !hooks_) return;
         devices_.classifyPending();
         if (!syntheticWatchdogEnabled_) return;
 
@@ -104,8 +120,9 @@ void ServerProvider::RunFrame() {
             DeviceSlot& slot = slots_[deviceIndex];
             // Submitting into vrserver has latency outside this driver's control, and
             // the 200+ Hz pose callback contends on slot.mutex. Build the synthetic
-            // pose under the lock, submit unlocked, then commit the Lost one-shot only
-            // if no real pose or reset re-armed the slot in between.
+            // pose under the lock, then submit through the per-device forwarding lane
+            // only if no real pose/reset changed generation. The slot is never held
+            // while acquiring that lane; callback lock order is lane -> slot.
             vr::DriverPose_t synthetic{};
             std::uint64_t generation = 0;
             bool lost = false;
@@ -127,7 +144,7 @@ void ServerProvider::RunFrame() {
                 generation = slot.generation;
                 lost = output->state == FilterState::Lost;
             }
-            const bool submitted = hooks_->submitPose(deviceIndex, synthetic);
+            const bool submitted = hooks_->submitPose(deviceIndex, synthetic, generation);
             if (submitted && lost) {
                 // Publish the terminal OutOfRange pose once, then wait for a real callback.
                 // Continuing forever can keep a powered-off tracker alive as a ghost device.
@@ -176,12 +193,14 @@ bool ServerProvider::filterPose(std::uint32_t deviceIndex,
 
     DeviceSlot& slot = slots_[deviceIndex];
     std::scoped_lock lock(slot.mutex);
+    // Any real callback supersedes an already-built watchdog pose, even if later
+    // validation/allocation throws and hooks forward this callback unmodified.
+    ++slot.generation;
+    slot.hasDriverPose = false;
 
     // A real disconnect always disarms synthetic output before any transform checks.
     if (!pose.deviceIsConnected) {
         if (slot.filter) slot.filter->reset();
-        ++slot.generation;
-        slot.hasDriverPose = false;
         slot.hasTransform = false;
         slot.hasDriverFromHead = false;
         slot.lastState = FilterState::Cold;
@@ -196,8 +215,6 @@ bool ServerProvider::filterPose(std::uint32_t deviceIndex,
             slot.driverFromHeadWarningLogged = true;
         }
         if (slot.filter) slot.filter->reset();
-        ++slot.generation;
-        slot.hasDriverPose = false;
         slot.hasTransform = false;
         slot.hasDriverFromHead = false;
         slot.lastState = FilterState::Cold;
@@ -207,14 +224,16 @@ bool ServerProvider::filterPose(std::uint32_t deviceIndex,
     if (slot.hasDriverFromHead &&
         PoseAdapter::transformChanged(slot.driverFromHead, incomingDriverFromHead)) {
         if (slot.filter) slot.filter->reset();
-        ++slot.generation;
         slot.lastState = FilterState::Cold;
         slot.driverFromHead = incomingDriverFromHead;
         slot.hasDriverFromHead = true;
-        slot.hasDriverPose = false;
         resetTransitionLogRate(slot);
-        log("tracker " + devices_.metadata(deviceIndex).serial +
-            " device-origin transform changed; filter re-armed without suppressing it");
+        // Continuous calibration may change this on every callback. Re-arm on
+        // every change, but do not allocate and write a log at tracking frequency.
+        if (slot.headTransformLogRate.shouldLog(steadyNowNs())) {
+            log("tracker " + devices_.metadata(deviceIndex).serial +
+                " device-origin transform changed; filter re-armed without suppressing it");
+        }
         return true;
     }
     slot.driverFromHead = incomingDriverFromHead;
@@ -239,21 +258,19 @@ bool ServerProvider::filterPose(std::uint32_t deviceIndex,
     if (transformValid) {
         if (slot.hasTransform && PoseAdapter::transformChanged(slot.transform, incomingTransform)) {
             if (slot.filter) slot.filter->reset();
-            ++slot.generation;
             slot.lastState = FilterState::Cold;
             slot.transform = incomingTransform;
-            slot.hasDriverPose = false;
             resetTransitionLogRate(slot);
-            log("tracker " + devices_.metadata(deviceIndex).serial +
-                " tracking-space transform changed; filter re-armed without suppressing it");
+            if (slot.worldTransformLogRate.shouldLog(steadyNowNs())) {
+                log("tracker " + devices_.metadata(deviceIndex).serial +
+                    " tracking-space transform changed; filter re-armed without suppressing it");
+            }
             return true;
         }
         slot.transform = incomingTransform;
         slot.hasTransform = true;
     } else if (!slot.hasTransform) {
         if (slot.filter) slot.filter->reset();
-        ++slot.generation;
-        slot.hasDriverPose = false;
         return true;
     }
 
@@ -267,7 +284,6 @@ bool ServerProvider::filterPose(std::uint32_t deviceIndex,
     }
     slot.lastDriverPose = pose;
     slot.hasDriverPose = true;
-    ++slot.generation;
     const FilterOutput output = slot.filter->push(sample);
     if (output.modified) PoseAdapter::applyOutput(pose, output, slot.transform);
 
@@ -277,6 +293,20 @@ bool ServerProvider::filterPose(std::uint32_t deviceIndex,
                           metrics.valid ? &metrics : nullptr, receiveTimeNs);
     }
     return true;
+}
+
+bool ServerProvider::isCurrentPoseGeneration(std::uint32_t deviceIndex,
+                                            std::uint64_t generation) noexcept {
+    try {
+        if (!active_.load(std::memory_order_acquire) || deviceIndex >= slots_.size()) {
+            return false;
+        }
+        DeviceSlot& slot = slots_[deviceIndex];
+        std::scoped_lock lock(slot.mutex);
+        return slot.hasDriverPose && slot.generation == generation;
+    } catch (...) {
+        return false;
+    }
 }
 
 void ServerProvider::log(const std::string& message) const noexcept {

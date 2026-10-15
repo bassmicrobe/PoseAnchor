@@ -76,10 +76,8 @@ void InterfaceHooks::remove() {
     provider_ = nullptr;
     for (auto& route : poseRoutes_) {
         std::scoped_lock routeLock(route.mutex);
-        route.sequence.fetch_add(1, std::memory_order_acq_rel);
-        route.host.store(nullptr, std::memory_order_relaxed);
-        route.original.store(nullptr, std::memory_order_relaxed);
-        route.sequence.fetch_add(1, std::memory_order_release);
+        route.host = nullptr;
+        route.original = nullptr;
     }
 
     if (poseTarget005_) MH_RemoveHook(poseTarget005_);
@@ -99,17 +97,24 @@ void InterfaceHooks::remove() {
 }
 
 bool InterfaceHooks::submitPose(std::uint32_t deviceIndex,
-                                const vr::DriverPose_t& pose) noexcept {
+                                const vr::DriverPose_t& pose,
+                                std::uint64_t generation) noexcept {
+    // Synthetic submissions need the same lifetime protection as detours. Do
+    // not hold mutex_ across route locking or a host call: reentrant interface
+    // discovery acquires mutex_ and would otherwise invert the lock order.
+    CallbackRundown callback;
+    if (detourShutdown_.load(std::memory_order_seq_cst) ||
+        instance_.load(std::memory_order_acquire) != this) return false;
     try {
-        std::scoped_lock lock(mutex_);
-        if (shuttingDown_ || !minHookInitialized_ || deviceIndex >= poseRoutes_.size()) {
+        if (deviceIndex >= poseRoutes_.size()) {
             return false;
         }
         auto& route = poseRoutes_[deviceIndex];
         std::scoped_lock routeLock(route.mutex);
-        vr::IVRServerDriverHost* const host = route.host.load(std::memory_order_relaxed);
-        const PoseFn original = route.original.load(std::memory_order_relaxed);
-        if (!host || !original) return false;
+        vr::IVRServerDriverHost* const host = route.host;
+        const PoseFn original = route.original;
+        if (!host || !original || !provider_ ||
+            !provider_->isCurrentPoseGeneration(deviceIndex, generation)) return false;
         original(host, deviceIndex, pose, sizeof(pose));
         return true;
     } catch (...) {
@@ -196,6 +201,10 @@ bool InterfaceHooks::installPoseHook(void* interfacePointer, bool version006) {
     if (!interfacePointer) return false;
     void* target = vtableTarget(interfacePointer, 1);
     if (!target) return false;
+    // Each detour has one trampoline. A second implementation of the same host
+    // version must not replace it while the first implementation is still hooked.
+    void* const existingTarget = version006 ? poseTarget006_ : poseTarget005_;
+    if (existingTarget && existingTarget != target) return false;
     if (target == poseTarget005_ || target == poseTarget006_) {
         if (version006) {
             poseTarget006_ = target;
@@ -262,34 +271,27 @@ void InterfaceHooks::filterAndForward(PoseFn original, vr::IVRServerDriverHost* 
         return;
     }
 
-    vr::DriverPose_t filtered;
-    bool useFiltered = false;
+    bool forwarded = false;
     try {
         auto& route = poseRoutes_[deviceIndex];
-        const std::uint64_t before = route.sequence.load(std::memory_order_acquire);
-        vr::IVRServerDriverHost* const knownHost =
-            route.host.load(std::memory_order_relaxed);
-        const PoseFn knownOriginal = route.original.load(std::memory_order_relaxed);
-        const std::uint64_t after = route.sequence.load(std::memory_order_acquire);
-        const bool stableMatch = before == after && (before & 1u) == 0 &&
-                                 knownHost == host && knownOriginal == original;
-        if (!stableMatch) {
-            std::scoped_lock routeLock(route.mutex);
-            // An odd sequence prevents the lock-free reader from accepting a transient
-            // host/trampoline pair while these two atomics are updated.
-            route.sequence.fetch_add(1, std::memory_order_acq_rel);
-            route.host.store(host, std::memory_order_relaxed);
-            route.original.store(original, std::memory_order_relaxed);
-            route.sequence.fetch_add(1, std::memory_order_release);
-        }
+        std::scoped_lock routeLock(route.mutex);
+        route.host = host;
+        route.original = original;
 
-        useFiltered = provider_->filterPose(deviceIndex, *pose, filtered);
+        vr::DriverPose_t filtered;
+        bool useFiltered = false;
+        try {
+            useFiltered = provider_->filterPose(deviceIndex, *pose, filtered);
+        } catch (...) {
+            // Keep the serialization lane until the fallback raw pose is sent.
+        }
+        forwarded = true;
+        original(host, deviceIndex, useFiltered ? filtered : *pose, poseSize);
     } catch (...) {
-        // Route bookkeeping and filtering must both fail open. The single call
-        // below forwards the raw pose exactly once after any C++ exception.
-        useFiltered = false;
+        // A lock/bookkeeping failure must still forward once. If the host itself
+        // throws, never resend a pose it may already have consumed.
     }
-    original(host, deviceIndex, useFiltered ? filtered : *pose, poseSize);
+    if (!forwarded) original(host, deviceIndex, *pose, poseSize);
 }
 
 void* InterfaceHooks::vtableTarget(void* object, int index) noexcept {

@@ -20,13 +20,18 @@ constexpr std::string_view kPoseAnchorTag = "[PoseAnchor] ";
 constexpr std::size_t kMaximumTrackers = 64;
 constexpr std::size_t kMaximumIdentityLength = 256;
 constexpr std::size_t kMaximumStateNameLength = 32;
+constexpr std::size_t kMaximumVersionLength = 64;
 constexpr std::size_t kMaximumJsonDepth = 64;
 
 bool parseUnsigned(std::string_view text, int& value) noexcept {
-    if (text.empty()) return false;
+    // Timestamp fields contain at most four ASCII digits. Unlike signed
+    // from_chars, this rejects malformed fields such as "-0" as an hour.
+    if (text.empty() || text.size() > 4) return false;
     int parsed{};
-    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), parsed);
-    if (error != std::errc{} || end != text.data() + text.size()) return false;
+    for (const unsigned char digit : text) {
+        if (digit < '0' || digit > '9') return false;
+        parsed = parsed * 10 + (digit - '0');
+    }
     value = parsed;
     return true;
 }
@@ -72,7 +77,20 @@ bool startsWith(std::string_view value, std::string_view prefix) noexcept {
     return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
 }
 
-std::optional<TrackerInfo> parseTracker(std::string_view message) {
+struct TrackerView {
+    std::string_view serial;
+    std::string_view model;
+};
+
+struct TransitionView {
+    std::string_view serial;
+    std::string_view fromState;
+    std::string_view toState;
+    std::uint32_t reasons{};
+    std::uint32_t suppressed{};
+};
+
+std::optional<TrackerView> parseTracker(std::string_view message) {
     constexpr std::string_view prefix = "identified Vive Tracker ";
     if (!startsWith(message, prefix)) return std::nullopt;
 
@@ -88,14 +106,11 @@ std::optional<TrackerInfo> parseTracker(std::string_view message) {
         return std::nullopt;
     }
 
-    TrackerInfo result;
-    result.serial.assign(message.substr(0, modelStart));
-    result.model.assign(message.substr(modelStart + 2, modelEnd - modelStart - 2));
-    return result;
+    return TrackerView{message.substr(0, modelStart),
+                       message.substr(modelStart + 2, modelEnd - modelStart - 2)};
 }
 
-std::optional<TransitionEvent> parseTransition(
-    std::string_view message, const LocalTimestamp& timestamp) {
+std::optional<TransitionView> parseTransition(std::string_view message) {
     constexpr std::string_view prefix = "tracker ";
     if (!startsWith(message, prefix)) return std::nullopt;
     message.remove_prefix(prefix.size());
@@ -106,9 +121,8 @@ std::optional<TransitionEvent> parseTransition(
         return std::nullopt;
     }
 
-    TransitionEvent event;
-    event.timestamp = timestamp;
-    event.serial.assign(message.substr(0, serialEnd));
+    TransitionView event;
+    event.serial = message.substr(0, serialEnd);
     message.remove_prefix(serialEnd + 1);
 
     const std::size_t arrow = message.find(" -> ");
@@ -116,7 +130,7 @@ std::optional<TransitionEvent> parseTransition(
         arrow > kMaximumStateNameLength) {
         return std::nullopt;
     }
-    event.fromState.assign(message.substr(0, arrow));
+    event.fromState = message.substr(0, arrow);
     message.remove_prefix(arrow + 4);
 
     const std::size_t toEnd = message.find(' ');
@@ -124,7 +138,7 @@ std::optional<TransitionEvent> parseTransition(
         toEnd > kMaximumStateNameLength) {
         return std::nullopt;
     }
-    event.toState.assign(message.substr(0, toEnd));
+    event.toState = message.substr(0, toEnd);
 
     std::string_view reasons = tokenValue(message, "reasons=0x");
     if (reasons.empty() || !parseUint32(reasons, 16, event.reasons)) return std::nullopt;
@@ -145,8 +159,11 @@ public:
     void position(std::size_t value) noexcept { position_ = std::min(value, input_.size()); }
 
     void skipWhitespace() noexcept {
+        // JSON has exactly four whitespace characters. Locale whitespace such
+        // as form feed must not turn a malformed registry into trusted input.
         while (position_ < input_.size() &&
-               std::isspace(static_cast<unsigned char>(input_[position_])) != 0) {
+               (input_[position_] == ' ' || input_[position_] == '\t' ||
+                input_[position_] == '\r' || input_[position_] == '\n')) {
             ++position_;
         }
     }
@@ -174,7 +191,29 @@ public:
             if (value == '"') return output;
             if (value < 0x20) return std::nullopt;
             if (value != '\\') {
-                output.push_back(static_cast<char>(value));
+                if (value < 0x80) {
+                    output.push_back(static_cast<char>(value));
+                } else {
+                    // Validate raw UTF-8 as strictly as escaped Unicode. This
+                    // also covers strings in unrelated members we skip.
+                    const std::size_t start = position_ - 1;
+                    std::size_t following{};
+                    if (value >= 0xC2 && value <= 0xDF) following = 1;
+                    else if (value >= 0xE0 && value <= 0xEF) following = 2;
+                    else if (value >= 0xF0 && value <= 0xF4) following = 3;
+                    else return std::nullopt;
+                    if (following > input_.size() - position_) return std::nullopt;
+                    const auto next = static_cast<unsigned char>(input_[position_]);
+                    if ((value == 0xE0 && next < 0xA0) ||
+                        (value == 0xED && next >= 0xA0) ||
+                        (value == 0xF0 && next < 0x90) ||
+                        (value == 0xF4 && next >= 0x90)) return std::nullopt;
+                    for (std::size_t index = 0; index < following; ++index) {
+                        const auto continuation = static_cast<unsigned char>(input_[position_++]);
+                        if (continuation < 0x80 || continuation > 0xBF) return std::nullopt;
+                    }
+                    output.append(input_.substr(start, following + 1));
+                }
                 continue;
             }
             if (position_ >= input_.size()) return std::nullopt;
@@ -411,7 +450,7 @@ std::optional<LocalTimestamp> parseSteamVrTimestamp(std::string_view line) noexc
     const auto month = std::find(kMonths.begin(), kMonths.end(), line.substr(4, 3));
     if (month == kMonths.end()) return std::nullopt;
     result.month = static_cast<int>(std::distance(kMonths.begin(), month)) + 1;
-    if (!parseUnsigned(trim(line.substr(8, 2)), result.day) ||
+    if (!parseUnsigned(line[8] == ' ' ? line.substr(9, 1) : line.substr(8, 2), result.day) ||
         !parseUnsigned(line.substr(11, 4), result.year) ||
         !parseUnsigned(line.substr(16, 2), result.hour) ||
         !parseUnsigned(line.substr(19, 2), result.minute) ||
@@ -419,8 +458,16 @@ std::optional<LocalTimestamp> parseSteamVrTimestamp(std::string_view line) noexc
         return std::nullopt;
     }
 
-    if (line.size() >= 28 && line[24] == '.') {
+    if (line.size() > 24 && line[24] == '.') {
+        // A snapshot can end partway through the timestamp of a line SteamVR
+        // is still writing. Never treat a partial fraction as whole seconds.
+        if (line.size() < 28) return std::nullopt;
         if (!parseUnsigned(line.substr(25, 3), result.millisecond)) return std::nullopt;
+        if (line.size() > 28 && line[28] != ' ' && line[28] != '\t') {
+            return std::nullopt;
+        }
+    } else if (line.size() > 24 && line[24] != ' ' && line[24] != '\t') {
+        return std::nullopt;
     }
     if (!result.valid()) return std::nullopt;
     return result;
@@ -429,6 +476,7 @@ std::optional<LocalTimestamp> parseSteamVrTimestamp(std::string_view line) noexc
 SessionSummary parseVrServerLog(std::string_view utf8Log, const ParseOptions& options) {
     SessionSummary summary;
     bool pendingHookInstalled = false;
+    std::size_t nextRecentEvent = 0;
 
     std::size_t offset = 0;
     while (offset <= utf8Log.size()) {
@@ -467,6 +515,10 @@ SessionSummary parseVrServerLog(std::string_view utf8Log, const ParseOptions& op
             " loaded (Vive Tracker only, normal poses pass through)";
         if (startsWith(message, loadPrefix) && message.size() > loadPrefix.size() + loadSuffix.size() &&
             message.substr(message.size() - loadSuffix.size()) == loadSuffix) {
+            const auto version = message.substr(
+                loadPrefix.size(), message.size() - loadPrefix.size() - loadSuffix.size());
+            if (version.size() > kMaximumVersionLength ||
+                version.find_first_of(" \t\r\n") != std::string_view::npos) continue;
             // A driver reload within one vrserver process starts a new status
             // epoch. Never attribute devices or interventions from an unloaded
             // copy to the copy that is active now.
@@ -477,8 +529,8 @@ SessionSummary parseVrServerLog(std::string_view utf8Log, const ParseOptions& op
             summary.trackingTransitions = 0;
             summary.trackersTruncated = false;
             summary.recentEvents.clear();
-            summary.version.assign(message.substr(
-                loadPrefix.size(), message.size() - loadPrefix.size() - loadSuffix.size()));
+            nextRecentEvent = 0;
+            summary.version.assign(version);
             summary.sawLoadLine = true;
             summary.loaded = true;
             summary.hookInstalled = pendingHookInstalled;
@@ -521,16 +573,16 @@ SessionSummary parseVrServerLog(std::string_view utf8Log, const ParseOptions& op
                 summary.trackers.begin(), summary.trackers.end(),
                 [&tracker](const TrackerInfo& value) { return value.serial == tracker->serial; });
             if (existing != summary.trackers.end()) {
-                *existing = *tracker;
+                existing->model.assign(tracker->model);
             } else if (summary.trackers.size() < kMaximumTrackers) {
-                summary.trackers.push_back(*tracker);
+                summary.trackers.push_back({std::string(tracker->serial), std::string(tracker->model)});
             } else {
                 summary.trackersTruncated = true;
             }
             continue;
         }
 
-        if (const auto event = parseTransition(message, *timestamp)) {
+        if (const auto event = parseTransition(message)) {
             const std::uint32_t count = event->suppressed == std::numeric_limits<std::uint32_t>::max()
                 ? event->suppressed
                 : event->suppressed + 1;
@@ -543,15 +595,29 @@ SessionSummary parseVrServerLog(std::string_view utf8Log, const ParseOptions& op
             else if (event->toState == "tracking") addSaturating(summary.trackingTransitions, count);
 
             if (options.maxRecentEvents != 0) {
-                if (summary.recentEvents.size() == options.maxRecentEvents) {
-                    summary.recentEvents.erase(summary.recentEvents.begin());
+                // Reuse the oldest slot instead of shifting every retained
+                // event and allocating temporary strings on every log line.
+                if (summary.recentEvents.size() < options.maxRecentEvents) {
+                    summary.recentEvents.emplace_back();
                 }
-                summary.recentEvents.push_back(*event);
+                auto& retained = summary.recentEvents[nextRecentEvent];
+                retained.timestamp = *timestamp;
+                retained.serial.assign(event->serial);
+                retained.fromState.assign(event->fromState);
+                retained.toState.assign(event->toState);
+                retained.reasons = event->reasons;
+                retained.suppressed = event->suppressed;
+                if (++nextRecentEvent == options.maxRecentEvents) nextRecentEvent = 0;
             }
         }
     }
 
     if (!summary.loaded) summary.hookInstalled = false;
+    if (nextRecentEvent != 0 && summary.recentEvents.size() == options.maxRecentEvents) {
+        std::rotate(summary.recentEvents.begin(),
+                    summary.recentEvents.begin() + static_cast<std::ptrdiff_t>(nextRecentEvent),
+                    summary.recentEvents.end());
+    }
     std::sort(summary.trackers.begin(), summary.trackers.end(),
               [](const TrackerInfo& left, const TrackerInfo& right) {
                   return left.serial < right.serial;

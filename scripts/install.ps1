@@ -14,9 +14,7 @@ if (-not $DriverPath) {
         Join-Path $projectOrPackageRoot 'build\pose_anchor'
     }
 }
-if (Get-Process vrserver -ErrorAction SilentlyContinue) {
-    throw 'Exit SteamVR before installing the driver.'
-}
+Assert-SteamVrRegistrationWritable
 $resolvedDriver = (Resolve-Path -LiteralPath $DriverPath).Path
 foreach ($required in @(
     'driver.vrdrivermanifest',
@@ -30,38 +28,28 @@ foreach ($required in @(
     'licenses\OpenVR-SpaceCalibrator-LICENSE.txt',
     'scripts\uninstall.ps1'
 )) {
-    if (-not (Test-Path -LiteralPath (Join-Path $resolvedDriver $required))) {
+    if (-not (Test-Path -LiteralPath (Join-Path $resolvedDriver $required) -PathType Leaf)) {
         throw "The driver package is incomplete: $required"
     }
 }
 $vrPathReg = Find-SteamVrPathReg
-# Under ErrorActionPreference=Stop, Windows PowerShell 5.1 turns any native stderr
-# line into a terminating NativeCommandError when the stream is redirected. Relax
-# the preference around the call and drop stderr so the stdout path parsing below
-# cannot be corrupted if a future vrpathreg starts writing diagnostics there.
-$previousErrorActionPreference = $ErrorActionPreference
-$ErrorActionPreference = 'Continue'
-$existingOutput = @(& $vrPathReg finddriver pose_anchor 2>$null | ForEach-Object { "$_" })
-$findExitCode = $LASTEXITCODE
-$ErrorActionPreference = $previousErrorActionPreference
-if ($findExitCode -eq 0) {
-    $existingPath = [string]($existingOutput | Where-Object { $_ } | Select-Object -Last 1)
-    $existingFullPath = [IO.Path]::GetFullPath($existingPath).TrimEnd('\')
-    $requestedFullPath = [IO.Path]::GetFullPath($resolvedDriver).TrimEnd('\')
-    if (-not $existingFullPath.Equals($requestedFullPath, [StringComparison]::OrdinalIgnoreCase)) {
+$registration = Get-PoseAnchorDriverRegistration $vrPathReg
+if ($registration.ExitCode -eq 0) {
+    $existingPath = $registration.Path
+    if (-not (Test-SteamVrDriverPathEqual $existingPath $resolvedDriver)) {
         throw "A different PoseAnchor path is already registered: $existingPath. Unregister it first with scripts\uninstall.ps1 -AllWithName."
     }
     Write-Host "PoseAnchor is already registered at: $existingPath"
     return
 }
-if ($findExitCode -eq 2) {
+if ($registration.ExitCode -eq 2) {
     throw 'PoseAnchor is registered more than once. Run scripts\uninstall.ps1 -AllWithName first.'
 }
-if ($findExitCode -ne 1) {
-    throw "vrpathreg finddriver failed: $findExitCode"
-}
 if ($PSCmdlet.ShouldProcess($resolvedDriver, 'Register as a SteamVR external driver')) {
+    # Confirmation can remain open while the user starts SteamVR.
+    Assert-SteamVrRegistrationWritable
     & $vrPathReg adddriver $resolvedDriver
     if ($LASTEXITCODE -ne 0) { throw "vrpathreg adddriver failed: $LASTEXITCODE" }
+    Assert-PoseAnchorDriverRegistration -VrPathReg $vrPathReg -DriverPath $resolvedDriver
     Write-Host "Registered PoseAnchor: $resolvedDriver"
 }

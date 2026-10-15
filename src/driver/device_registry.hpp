@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <string>
 #include <openvr_driver.h>
@@ -45,6 +46,9 @@ public:
     [[nodiscard]] DeviceKind kind(std::uint32_t index) const noexcept;
     void requestClassification(std::uint32_t index) noexcept;
     void classifyPending();
+    // Explicit clock input allows deterministic retry tests; production uses the
+    // no-argument overload, which reads the clock only when work is pending.
+    void classifyPendingAt(std::chrono::steady_clock::time_point now);
     [[nodiscard]] const DeviceMetadata& metadata(std::uint32_t index) const noexcept;
 
 private:
@@ -58,6 +62,9 @@ private:
     static_assert(std::atomic_uint64_t::is_always_lock_free);
     std::atomic_uint64_t pendingMask_{};
     std::array<DeviceMetadata, vr::k_unMaxTrackedDeviceCount> metadata_{};
+    std::array<std::chrono::steady_clock::time_point, vr::k_unMaxTrackedDeviceCount>
+        retryAfter_{};
+    std::array<std::uint8_t, vr::k_unMaxTrackedDeviceCount> retryAttempts_{};
 };
 
 }  // namespace pose_anchor::driver

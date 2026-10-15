@@ -6,7 +6,7 @@ param(
     [switch]$SkipBuild,
 
     # SHA-1 thumbprint of an Authenticode code-signing certificate in the current
-    # user's or machine's certificate store. When set, packaged executable files
+    # user's certificate store. When set, packaged executable files
     # are signed before Inno Setup signs Setup and its embedded uninstaller.
     [ValidatePattern('^[0-9A-Fa-f]{40}$')]
     [string]$CertificateThumbprint,
@@ -44,6 +44,7 @@ if (-not $SkipBuild) {
 
 $requiredFiles = @(
     'driver.vrdrivermanifest',
+    'build-info.json',
     'bin\win64\driver_pose_anchor.dll',
     'PoseAnchorStatus.exe',
     'PoseAnchor.ico',
@@ -61,6 +62,17 @@ foreach ($relativePath in $requiredFiles) {
     if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
         throw "Installer input is missing: $fullPath"
     }
+}
+
+# All configurations are staged to the same distribution directory. In
+# particular, -SkipBuild must not silently label a Debug or older payload as the
+# requested release. CMake emits this metadata alongside the staged binaries.
+$buildInfo = Get-Content -LiteralPath (Join-Path $packageRoot 'build-info.json') -Raw |
+    ConvertFrom-Json
+if ($buildInfo.project -cne 'PoseAnchor' -or
+    $buildInfo.version -cne $Version -or
+    $buildInfo.configuration -cne $Configuration) {
+    throw "The staged package does not match PoseAnchor $Version ($Configuration). Run scripts\build.ps1 -Configuration $Configuration before packaging."
 }
 
 function Find-SignTool {
@@ -152,5 +164,5 @@ if ($CertificateThumbprint -and $signature.Status -ne 'Valid') {
     throw "Signing was requested, but the completed installer signature is not valid: $($signature.Status)"
 }
 if (-not $CertificateThumbprint -and $signature.Status -ne 'Valid') {
-    Write-Warning 'The installer is unsigned. Rerun with -CertificateThumbprint <sha1> to sign it before public distribution.'
+    Write-Warning 'The installer is unsigned. Windows may warn or block it according to user or organization policy. Authenticode signing is optional; use -CertificateThumbprint <sha1> when a signing certificate is available.'
 }
