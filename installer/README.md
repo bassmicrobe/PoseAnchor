@@ -3,6 +3,9 @@
 `PoseAnchor.iss` builds the command-free Windows distribution with Inno Setup 6.
 It installs per user under `%LOCALAPPDATA%\Programs\PoseAnchor`, registers that
 folder with SteamVR's own `vrpathreg.exe`, and creates Inno Setup's uninstaller.
+The uninstaller is embedded in the Setup EXE and installed automatically. Users
+can remove PoseAnchor through Windows Settings → Apps → Installed apps, or the
+**Uninstall PoseAnchor** Start-menu entry; no command or separate download is needed.
 
 The registration flow follows Valve's driver guidance:
 
@@ -17,8 +20,33 @@ The registration flow follows Valve's driver guidance:
 6. If adding or verifying `{app}` fails, restore and hash-check that exact
    backup. Captured paths are used only as a best-effort fallback.
 7. Verify the installed path with a final `finddriver`.
-8. Run `removedriver {app}` before uninstalling files and verify that
-   `finddriver pose_anchor` no longer reports the installed path.
+8. Before uninstalling files, inspect this exact path. If already absent, no
+   registration write is needed. Otherwise run `removedriver {app}` and verify
+   that `finddriver pose_anchor` no longer reports the installed path.
+
+Uninstallation only removes the registration for its own exact installation
+path. It does not use name-wide removal, change another PoseAnchor copy or other
+drivers, or delete SteamVR user settings and logs. If unregistration or its
+verification fails, it aborts before file deletion, including unattended removal;
+there is no continue-anyway override. Follow the error and retry after resolving
+it rather than deleting the registered folder manually.
+
+Inno Setup removes the files and shortcuts recorded by the installation; there
+is no recursive installation-directory wipe. Separately added files may remain
+and keep the directory from being removed. Edits to originally installed files
+do not exempt those files from removal, so back them up elsewhere if needed.
+The end-user steps are in the bundled [manual](../MANUAL.md).
+
+On a Windows build machine with Inno Setup, run
+`tests\uninstaller_runtime_tests.ps1` for the isolated runtime regression.
+It copies the production uninstall events and path helpers into an inert fixture,
+with mocked registration/process inspection and no Windows Apps registry entry.
+The fixture checks refusal paths and verifies that successful removal deletes
+only its installed payload while preserving a separately added file. Test files
+are retained under a fresh ignored `build/uninstall-safety-*` directory.
+`-CompileOnly` compiles without executing the fixture. Windows CI runs the full
+fixture after building the installer. This does not replace real SteamVR
+registration, upgrade, permission, or unusual-path testing on a disposable host.
 
 Setup never closes SteamVR or PoseAnchor Status automatically. A short
 language-specific safety page is shown before installation, and a running
@@ -29,10 +57,12 @@ Process inspection errors are reported separately from a detected running app.
 Both block setup/uninstall, but an inspection failure gives restart/support
 guidance instead of asking the user to close a process that may not exist.
 
-Setup and uninstall reject `VR_PATHREG_OVERRIDE`: their backup and rollback use
-the standard per-user OpenVR registration file. Remove that override and launch
-them from a new session. They do not modify a different registry behind the
-backup's protection.
+Setup and uninstall reject `VR_PATHREG_OVERRIDE` and only support the standard
+per-user OpenVR registration file. Setup's backup and rollback target that file;
+uninstall does not restore the entire registry, which could overwrite unrelated
+concurrent changes. Remove the override and launch from a new session before
+retrying. A failed uninstall retains the installed files, but this copy's
+registration may already have been removed.
 
 Build the installer from the repository root with
 `scripts\build-installer.ps1`. The generated EXE and SHA-256 checksum are placed

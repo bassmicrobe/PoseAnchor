@@ -328,6 +328,9 @@ if(POSE_ANCHOR_BUILD_DRIVER)
                 "${CMAKE_SOURCE_DIR}/PACKAGE_README.md"
                 "${POSE_ANCHOR_PACKAGE_DIR}/README.md"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/MANUAL.md"
+                "${POSE_ANCHOR_PACKAGE_DIR}/MANUAL.md"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/src/status/PoseAnchorStatus.ico"
                 "${POSE_ANCHOR_PACKAGE_DIR}/PoseAnchor.ico"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different

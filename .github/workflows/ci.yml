@@ -40,6 +40,10 @@ jobs:
       - name: Build unsigned installer and checksum
         run: .\scripts\build-installer.ps1 -SkipBuild
 
+      - name: Verify uninstaller lifecycle with an isolated inert fixture
+        timeout-minutes: 5
+        run: .\tests\uninstaller_runtime_tests.ps1
+
   linux-sanitizers:
     name: Core filter (clang, ASan + UBSan)
     runs-on: ubuntu-latest

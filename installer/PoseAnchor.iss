@@ -84,8 +84,8 @@ english.RegistrationFailed=PoseAnchor files were installed, but the new SteamVR 
 japanese.RegistrationFailed=PoseAnchorのファイルはインストールされましたが、新しいSteamVRドライバの登録に失敗しました。以前の登録は可能な範囲で復元しました。%n%nSteamVRを終了したまま、このインストーラーをもう一度実行してください。詳細はセットアップログを確認してください。
 english.RegistrationRollbackFailed=PoseAnchor files were installed, but the new registration failed and Setup could not fully restore the previous registration.%n%nDo not start SteamVR yet. See the setup log and repair the registration before continuing.
 japanese.RegistrationRollbackFailed=PoseAnchorのファイルはインストールされましたが、新しい登録に失敗し、以前の登録も完全には復元できませんでした。%n%nSteamVRをまだ起動しないでください。セットアップログを確認し、登録を修復してから続行してください。
-english.UnregistrationFailed=Setup could not confirm that the PoseAnchor registration was removed from SteamVR. Removing the files now may leave a broken external-driver entry.%n%nChoose No, repair or reinstall SteamVR if needed, and try again. Continue uninstalling anyway?
-japanese.UnregistrationFailed=PoseAnchorのSteamVR登録が削除されたことを確認できませんでした。このままファイルを削除すると、壊れた外部ドライバ登録が残る可能性があります。%n%n「いいえ」を選び、必要に応じてSteamVRを修復または再インストールしてから、もう一度お試しください。それでもアンインストールを続行しますか？
+english.UnregistrationFailed=Could not verify removal of this PoseAnchor copy's SteamVR registration. Uninstall has stopped before deleting installed files.%n%nThe registration may already have been removed. Keep SteamVR closed, repair or reinstall SteamVR if needed, then run this uninstaller again. Do not delete the installed folder manually.
+japanese.UnregistrationFailed=このPoseAnchorのSteamVR登録が解除されたことを確認できませんでした。インストール済みファイルを削除せず、アンインストールを中止します。%n%n登録だけは解除済みの場合があります。SteamVRを閉じたまま、必要に応じてSteamVRを修復または再インストールし、アンインストーラーをもう一度実行してください。インストール先を手動で削除しないでください。
 english.SteamVRRunningSetup=SteamVR is currently running. Exit SteamVR completely, cancel this Setup, then run it again. Setup will not close SteamVR automatically.
 japanese.SteamVRRunningSetup=SteamVRが実行中です。SteamVRを完全に終了し、このセットアップをキャンセルしてから、もう一度実行してください。セットアップがSteamVRを自動終了することはありません。
 english.SteamVRRunningUninstall=SteamVR is currently running. Exit SteamVR completely, then run the PoseAnchor uninstaller again.
@@ -108,6 +108,8 @@ english.OpenSetupLog=Open the setup log
 japanese.OpenSetupLog=セットアップログを開く
 english.StatusShortcut=PoseAnchor Status
 japanese.StatusShortcut=PoseAnchor ステータス
+english.ManualShortcut=PoseAnchor Manual
+japanese.ManualShortcut=PoseAnchor マニュアル
 
 [Files]
 Source: "{#PackageDir}\driver.vrdrivermanifest"; DestDir: "{app}"; Flags: ignoreversion
@@ -115,6 +117,7 @@ Source: "{#PackageDir}\bin\win64\driver_pose_anchor.dll"; DestDir: "{app}\bin\wi
 Source: "{#PackageDir}\PoseAnchorStatus.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\resources\settings\default.vrsettings"; DestDir: "{app}\resources\settings"; Flags: ignoreversion
 Source: "{#PackageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\MANUAL.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\THIRD_PARTY_NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\licenses\OpenVR-LICENSE.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
@@ -124,6 +127,7 @@ Source: "{#PackageDir}\licenses\OpenVR-SpaceCalibrator-LICENSE.txt"; DestDir: "{
 
 [Icons]
 Name: "{group}\{cm:StatusShortcut}"; Filename: "{app}\PoseAnchorStatus.exe"
+Name: "{group}\{cm:ManualShortcut}"; Filename: "{sys}\notepad.exe"; Parameters: """{app}\MANUAL.md"""
 Name: "{group}\PoseAnchor README"; Filename: "{sys}\notepad.exe"; Parameters: """{app}\README.md"""
 Name: "{group}\{cm:UninstallProgram,PoseAnchor}"; Filename: "{uninstallexe}"
 
@@ -142,6 +146,8 @@ Type: dirifempty; Name: "{app}\scripts"
 ; shortcuts. This prevents duplicates when an update changes installer language.
 Type: files; Name: "{group}\PoseAnchor Status.lnk"
 Type: files; Name: "{group}\PoseAnchor ステータス.lnk"
+Type: files; Name: "{group}\PoseAnchor Manual.lnk"
+Type: files; Name: "{group}\PoseAnchor マニュアル.lnk"
 Type: files; Name: "{group}\Uninstall PoseAnchor.lnk"
 Type: files; Name: "{group}\PoseAnchor をアンインストールする.lnk"
 
@@ -172,6 +178,9 @@ var
 function MoveFileExW(const ExistingFileName, NewFileName: String;
   Flags: Cardinal): Boolean;
   external 'MoveFileExW@kernel32.dll stdcall';
+
+function GetFileAttributesW(const FileName: String): Cardinal;
+  external 'GetFileAttributesW@kernel32.dll stdcall';
 
 function SetupFailureMessage(const MessageText: String): String;
 var
@@ -256,19 +265,56 @@ begin
             TrySteamVrRoot(ExpandConstant('{pf32}\Steam\steamapps\common\SteamVR'));
 end;
 
-function FirstNonEmptyLine(const Lines: TArrayOfString): String;
+function TryNormalizeRegistrationPath(Value: String; var Path: String): Boolean;
+var
+  DrivePath: Boolean;
+  NetworkPath: Boolean;
+begin
+  Result := False;
+  Path := '';
+  Value := CleanPath(Value);
+  StringChangeEx(Value, '/', '\', True);
+  if Length(Value) < 3 then
+    Exit;
+  DrivePath := (Pos(Uppercase(Copy(Value, 1, 1)), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ') > 0) and
+    (Value[2] = ':') and (Value[3] = '\');
+  NetworkPath := (Copy(Value, 1, 2) = '\\') and
+    (Value[3] <> '?') and (Value[3] <> '.');
+  // Never interpret a warning, drive-relative path or device namespace as a
+  // complete registration path. Normalize lexical slash/dot aliases as well.
+  if (not DrivePath) and (not NetworkPath) then
+    Exit;
+  try
+    Path := RemoveBackslashUnlessRoot(ExpandFileName(Value));
+    Result := Path <> '';
+  except
+    Log('PoseAnchor: could not normalize a registration path');
+  end;
+end;
+
+function TrySingleRegistrationPath(const Lines: TArrayOfString;
+  var Path: String): Boolean;
 var
   I: Integer;
+  Count: Integer;
+  Candidate: String;
 begin
-  Result := '';
+  Result := False;
+  Path := '';
+  Candidate := '';
+  Count := 0;
   for I := 0 to GetArrayLength(Lines) - 1 do
   begin
     if Trim(Lines[I]) <> '' then
     begin
-      Result := Trim(Lines[I]);
-      Exit;
+      Count := Count + 1;
+      if Count > 1 then
+        Exit;
+      Candidate := Lines[I];
     end;
   end;
+  if Count = 1 then
+    Result := TryNormalizeRegistrationPath(Candidate, Path);
 end;
 
 procedure LogCapturedOutput(const Prefix: String; const Output: TExecOutput);
@@ -286,6 +332,7 @@ end;
 function RunVrPathReg(const Parameters: String; var ResultCode: Integer;
   var Output: TExecOutput): Boolean;
 begin
+  Result := False;
   ResultCode := -9999;
   // vrpathreg honors this override, while our byte-exact backup and rollback
   // deliberately target the standard per-user registry. Never mutate another
@@ -296,16 +343,33 @@ begin
     Result := False;
     Exit;
   end;
-  Result := ExecAndCaptureOutput(VrPathRegPath, Parameters, SteamVrRoot,
-    SW_HIDE, ewWaitUntilTerminated, ResultCode, Output);
+  try
+    Result := ExecAndCaptureOutput(VrPathRegPath, Parameters, SteamVrRoot,
+      SW_HIDE, ewWaitUntilTerminated, ResultCode, Output);
+  except
+    Log('PoseAnchor: vrpathreg output capture failed: ' + GetExceptionMessage);
+    Exit;
+  end;
   Log(Format('PoseAnchor: vrpathreg %s exited %d (launch=%d)', [Parameters, ResultCode, Ord(Result)]));
   if Result then
+  begin
     LogCapturedOutput('PoseAnchor: vrpathreg', Output);
+    if Output.Error then
+    begin
+      Log('PoseAnchor: vrpathreg output was incomplete; registration is unverified');
+      Result := False;
+    end;
+  end;
 end;
 
 function SamePath(Left, Right: String): Boolean;
+var
+  NormalizedLeft: String;
+  NormalizedRight: String;
 begin
-  Result := CompareText(CleanPath(Left), CleanPath(Right)) = 0;
+  Result := TryNormalizeRegistrationPath(Left, NormalizedLeft) and
+    TryNormalizeRegistrationPath(Right, NormalizedRight) and
+    (CompareText(NormalizedLeft, NormalizedRight) = 0);
 end;
 
 procedure ResetRegistrationPlan;
@@ -494,6 +558,7 @@ function TryRegistrationPathPresent(const Path: String;
 var
   ResultCode: Integer;
   Output: TExecOutput;
+  ExistingPath: String;
 begin
   Present := False;
   Result := False;
@@ -506,8 +571,9 @@ begin
   end;
   if ResultCode = 0 then
   begin
-    Present := OutputContainsPath(Output.StdOut, Path);
-    Result := True;
+    Result := TrySingleRegistrationPath(Output.StdOut, ExistingPath);
+    if Result then
+      Present := SamePath(ExistingPath, Path);
   end;
   if ResultCode = 2 then
   begin
@@ -544,8 +610,7 @@ begin
   end
   else if ResultCode = 0 then
   begin
-    ExistingPath := FirstNonEmptyLine(Output.StdOut);
-    if ExistingPath = '' then
+    if not TrySingleRegistrationPath(Output.StdOut, ExistingPath) then
       Exit;
     if SamePath(ExistingPath, AppPath) then
     begin
@@ -754,8 +819,8 @@ begin
       Exit;
     if ResultCode = 0 then
     begin
-      ExistingPath := FirstNonEmptyLine(Output.StdOut);
-      if SamePath(ExistingPath, AppPath) then
+      if TrySingleRegistrationPath(Output.StdOut, ExistingPath) and
+         SamePath(ExistingPath, AppPath) then
       begin
         Result := True;
         Exit;
@@ -782,12 +847,31 @@ begin
     RollBackRegistrationPlan;
     Exit;
   end;
-  ExistingPath := FirstNonEmptyLine(Output.StdOut);
-  Result := (ResultCode = 0) and SamePath(ExistingPath, AppPath);
+  Result := (ResultCode = 0) and
+    TrySingleRegistrationPath(Output.StdOut, ExistingPath) and
+    SamePath(ExistingPath, AppPath);
   if not Result then
     RollBackRegistrationPlan
   else
     ResetRegistrationPlan;
+end;
+
+function RegistrationFileDefinitelyMissing(const Path: String): Boolean;
+var
+  Attributes: Cardinal;
+  ErrorCode: LongInt;
+begin
+  Result := False;
+  Attributes := GetFileAttributesW(Path);
+  if Attributes <> $FFFFFFFF then
+    Exit;
+  // Capture the error from this imported API, not an intervening Inno call.
+  ErrorCode := DLLGetLastError;
+  // ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND only. Access denied, sharing
+  // failures and unknown I/O errors must never authorize file deletion.
+  Result := (ErrorCode = 2) or (ErrorCode = 3);
+  if not Result then
+    Log(Format('PoseAnchor: cannot prove the registration file is absent (error %d)', [ErrorCode]));
 end;
 
 function RemoveInstalledDriver: Boolean;
@@ -797,6 +881,7 @@ var
   AppPath: String;
   ExistingPath: String;
   OpenVrPathsFile: String;
+  Present: Boolean;
 begin
   Result := False;
   LateUninstallBlockMessage := '';
@@ -816,9 +901,9 @@ begin
   begin
     // SteamVR can be removed while openvrpaths.vrpath still retains external
     // drivers. Without vrpathreg, do not guess from substrings or malformed JSON:
-    // fail closed and let the user explicitly decide whether to keep the files.
+    // fail closed and keep installed files until absence can be verified.
     OpenVrPathsFile := ExpandConstant('{localappdata}\openvr\openvrpaths.vrpath');
-    if not FileExists(OpenVrPathsFile) then
+    if RegistrationFileDefinitelyMissing(OpenVrPathsFile) then
     begin
       Log('PoseAnchor: SteamVR and openvrpaths.vrpath were not found.');
       Result := True;
@@ -826,6 +911,22 @@ begin
     end;
 
     Log('PoseAnchor: SteamVR not found; refusing to infer registration state from openvrpaths.vrpath.');
+    Exit;
+  end;
+
+  // A previous attempt may have removed the entry but failed verification.
+  // Prove absence before issuing a write so retrying does not depend on
+  // removedriver's behavior for an already-unregistered path or rewrite a
+  // registry that now belongs to another copy.
+  if not TryRegistrationPathPresent(AppPath, Present) then
+    Exit;
+  LateUninstallBlockMessage := ProcessBlockMessage(
+    'SteamVRRunningUninstall', 'StatusRunningUninstall');
+  if LateUninstallBlockMessage <> '' then
+    Exit;
+  if not Present then
+  begin
+    Result := True;
     Exit;
   end;
 
@@ -847,8 +948,8 @@ begin
   begin
     // A single result is complete; duplicate-result stdout is not documented
     // as complete, so code 2 below must remain fail-closed.
-    ExistingPath := FirstNonEmptyLine(Output.StdOut);
-    Result := (ExistingPath <> '') and (not SamePath(ExistingPath, AppPath));
+    Result := TrySingleRegistrationPath(Output.StdOut, ExistingPath) and
+      (not SamePath(ExistingPath, AppPath));
   end
   else
     Result := False;
@@ -937,16 +1038,14 @@ begin
   begin
     DriverUnregistrationAttempted := True;
     if not RemoveInstalledDriver then
+    begin
       if LateUninstallBlockMessage <> '' then
-      begin
-        SuppressibleMsgBox(LateUninstallBlockMessage, mbError, MB_OK, IDOK);
-        Abort;
-      end
+        SuppressibleMsgBox(LateUninstallBlockMessage, mbError, MB_OK, IDOK)
       else
-      // Retaining the files is safer than leaving SteamVR pointed at a deleted DLL.
-      // Suppressed/unattended removal therefore also defaults to not continuing.
-      if SuppressibleMsgBox(CustomMessage('UnregistrationFailed'),
-         mbConfirmation, MB_YESNO, IDNO) <> IDYES then
-        Abort;
+        SuppressibleMsgBox(CustomMessage('UnregistrationFailed'), mbError, MB_OK, IDOK);
+      // Abort from usUninstall exits before Inno deletes installed files. There
+      // is no override, including silent removal: uncertain means retain files.
+      Abort;
+    end;
   end;
 end;

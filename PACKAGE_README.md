@@ -2,6 +2,9 @@
 
 English installation, status, and recovery instructions follow the Japanese section.
 
+短い手順は同梱の[簡易マニュアル](MANUAL.md)を参照してください。インストール後は
+スタートメニューの「PoseAnchor マニュアル」からも開けます。
+
 SteamVR / Lighthouse環境のHTC Vive Trackerだけを対象に、短いtracking jumpや
 Out-of-Rangeの抑制を目指すWindows x64サーバードライバです。改善を保証するものではありません。HMD、コントローラー、
 Base Stationには触れません。
@@ -29,14 +32,21 @@ Hold（短時間の予測）、Recovery（復帰補正）、Lost（位置を信�
 不具合があればSteamVRと「PoseAnchor ステータス」を終了し、Windowsの
 「設定 → アプリ → インストールされているアプリ → PoseAnchor」またはスタートメニューの
 「PoseAnchor をアンインストールする」を選びます。
-同梱アンインストーラーがSteamVR登録解除後にファイルを削除します。
+アンインストーラーはSetupに同梱され、インストール時に自動で配置されます。
+このインストール先のSteamVR登録を解除・確認した後、インストール時に記録したファイルを
+削除します。実行状態や登録解除を確認できない場合はファイル削除前に中止し、
+失敗を無視して続行することはできません。SteamVRや状態画面を強制終了せず、別の場所の
+PoseAnchor、他のドライバ、SteamVRのユーザー設定やログは削除しません。
+追加したファイルがあるとフォルダが残る場合があります。配布ファイル自体の編集内容は
+削除対象になるため、必要なら先にバックアップしてください。詳しい手順は[マニュアル](MANUAL.md)を参照してください。
 
 セットアップで登録に失敗した場合はSteamVRを起動せず、表示された案内に従ってください。
 エラー画面にはセットアップログの場所が表示されます。失敗後の完了画面で
 「セットアップログを開く」を選択し、「完了」を押すと記録を確認できます。
 「実行中か確認できませんでした」と表示された場合は、アプリの起動を検出したという意味では
 ありません。安全確認に失敗したため処理を中断しています。表示された再起動の案内を試しても
-解決しない場合は、エラーやログを添えてプロジェクトのIssuesへ報告してください。
+解決しない場合は、必要なエラー箇所を抜き出し、ユーザー名・個人のパス・Trackerシリアル等を
+伏せてプロジェクトのIssuesへ報告してください。ログ全体をそのまま公開しないでください。
 
 SteamVR本体へファイルはコピーせず、ユーザーごとのPoseAnchorフォルダをexternal driverとして
 登録します。アップグレードや再インストール時も、SteamVRと「PoseAnchor ステータス」を
@@ -64,6 +74,9 @@ SteamVR更新で動かなくなる可能性があります。OSS表記は同梱�
 `THIRD_PARTY_NOTICES.md`を、ソース、設計、テストはソース配布側のREADMEを参照してください。
 
 ## English: installation and recovery
+
+For a short guide, open the included [manual](MANUAL.md), also available as
+**PoseAnchor Manual** in the Start menu after installation.
 
 PoseAnchor is an experimental Windows x64 SteamVR driver for HTC Vive Trackers in a
 Lighthouse setup. It may reduce brief tracking jumps and dropouts. It does not
@@ -97,12 +110,20 @@ completion page, select **Open the setup log** and then **Finish** to inspect it
 If restoring the previous registration failed, repair it before starting SteamVR.
 If Setup or the uninstaller says it could not check whether a process is running,
 this is a failed safety check, not a detected running app. Follow the restart
-guidance; if it persists, report the error or log through the project's Issues page.
+guidance; if it persists, report only the relevant error excerpts through the project's
+Issues page. Redact usernames, personal paths, tracker serials and other private
+information first; do not publish entire logs unchanged.
 
 To remove PoseAnchor, close SteamVR and PoseAnchor Status, then use **Windows
 Settings → Apps → Installed apps → PoseAnchor → Uninstall**, or **Uninstall
 PoseAnchor** in the Start menu. The included uninstaller unregisters the driver
-before removing its files.
+for this installation and verifies removal before deleting its recorded files.
+It is installed automatically by Setup; no separate download is needed. Failed
+process inspection or unregistration/verification stops removal before files are
+deleted, with no continue-anyway option. It never force-closes SteamVR or Status,
+and does not remove another PoseAnchor copy, other drivers, SteamVR user settings,
+or logs. Separately added files may leave the folder behind. Back up any edits to
+installed files before removal. See the [manual](MANUAL.md) for the full procedure.
 
 By default, brief prediction lasts at most 150 ms and is limited to 25 cm / 45°.
 After loss of tracking, a stable raw pose must be observed for 80 ms before it
@@ -116,3 +137,15 @@ pose callbacks stop. Settings changes take effect after restarting SteamVR.
 
 PoseAnchor uses MinHook rather than a public pose-replacement API, so SteamVR updates may affect
 compatibility. See `THIRD_PARTY_NOTICES.md` for the open-source notices.
+
+## ライセンス / Licenses and privacy
+
+PoseAnchor本体はMIT Licenseです。第三者の依存物にはそれぞれのライセンスが適用されます。
+再配布時は同梱の`LICENSE`、`THIRD_PARTY_NOTICES.md`、`licenses/`を残してください。
+ドライバーと状態画面に独自のテレメトリ送信・アップロード機能はありませんが、ローカルの
+診断ログや画面には個人のパスや機器識別子が含まれる場合があります。
+
+PoseAnchor itself is MIT-licensed; dependencies retain their own licenses.
+Keep `LICENSE`, `THIRD_PARTY_NOTICES.md`, and `licenses/` when redistributing.
+The driver and status app have no built-in telemetry upload, but local diagnostics
+can contain personal paths and device identifiers. Review and redact them before sharing.

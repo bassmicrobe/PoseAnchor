@@ -1,5 +1,21 @@
 /build/
+/build-*/
 /dist/
 /.vs/
 *.user
 *.suo
+
+# Local settings, signing material and diagnostics must not be published.
+.env
+.env.*
+!.env.example
+*.pfx
+*.p12
+*.key
+*.pem
+*.log
+*.dmp
+*.mdmp
+*.pdb
+openvrpaths.vrpath
+steamvr.vrsettings

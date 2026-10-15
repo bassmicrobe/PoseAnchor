@@ -7,6 +7,15 @@ SteamVR / Lighthouse環境の**Vive Trackerだけ**を対象に、瞬間的な�
 Base Station 2〜4台の構成を想定しています。HMD、コントローラー、Base Stationの
 poseには触れません。
 
+## はじめて使う方へ
+
+[簡易マニュアル](MANUAL.md)に、コマンド不要のインストール・状態確認・困ったとき・
+アンインストールをまとめています。マニュアルは配布版にも同梱し、インストール後は
+スタートメニューの「PoseAnchor マニュアル」から開けます。
+
+インストールと登録が正常に完了していれば、補正本体はSteamVRと一緒に起動・終了します。
+「PoseAnchor ステータス」は必要なときだけ開く確認画面で、閉じていても補正は動きます。
+
 ## 機能概要
 
 PoseAnchorは`vrserver.exe`内にロードされるフィルタ層です。Lighthouseドライバが
@@ -151,12 +160,19 @@ SteamVRの場所を検出し、ファイル配置、既存の同名登録確認�
 自動で行います。既定ではユーザーごとの`%LOCALAPPDATA%\Programs\PoseAnchor`へ入り、
 管理者権限やコマンド操作は不要です。
 
-解除はWindowsの「設定 → アプリ → インストールされているアプリ → PoseAnchor」または
-スタートメニューの「PoseAnchor をアンインストールする」から行えます。同梱アンインストーラーが
-SteamVR登録解除後にファイルを削除します。
+アンインストーラーはSetupに同梱され、インストール時に自動で配置されます。
+解除はSteamVRと「PoseAnchor ステータス」を閉じてから、Windowsの
+「設定 → アプリ → インストールされているアプリ → PoseAnchor」またはスタートメニューの
+「PoseAnchor をアンインストールする」から行えます。このインストール先だけを登録解除・確認し、
+インストール時に記録したファイルとショートカットを削除します。別のPoseAnchor登録や他の
+ドライバ、SteamVRのユーザー設定・ログは削除しません。フォルダの再帰削除は行わないため、
+後から追加したファイルが残る場合があります。配布ファイルを編集した場合は削除対象になるため、
+必要な内容を事前にバックアップしてください。手順は[簡易マニュアル](MANUAL.md)にまとめています。
 
-アップグレードやアンインストール時にSteamVRが実行中なら、ファイルや登録を変更せずに
-終了を案内します。インストーラーがSteamVRを自動終了することはありません。
+アップグレードやアンインストール時にSteamVRや状態画面が実行中、または実行状態を確認できない
+場合は、ファイルや登録を変更せずに中止します。登録解除や解除確認が失敗した場合も
+ファイル削除前に中止し、失敗を無視した続行はできません。SteamVRや状態画面を
+自動終了することはありません。
 
 インストール後はスタートメニューの「PoseAnchor ステータス」で、登録状態、SteamVRの
 実行状態、現セッションでのdriver/hook読込、認識したVive Tracker、直近の
@@ -268,4 +284,36 @@ SteamVRのユーザー設定に`driver_pose_anchor`セクションを追加し�
 - [MinHook](https://github.com/TsudaKageyu/minhook)
 - [OpenVR Driver API documentation](https://github.com/ValveSoftware/openvr/blob/master/docs/Driver_API_Documentation.md)
 
-ライセンスはMITです。依存関係と参考実装の表記は`THIRD_PARTY_NOTICES.md`を参照してください。
+## ライセンスと再配布
+
+PoseAnchor自身のコードとドキュメントは[MIT License](LICENSE)です。利用・改変・再配布・
+商用利用が認められていますが、著作権表示と許諾文の保持が必要です。無保証で提供されます。
+依存物まで一律にMITになるわけではなく、それぞれのライセンスが適用されます。
+
+| 対象 | 用途 | ライセンス / 原文 |
+| --- | --- | --- |
+| PoseAnchor | 本体・ドキュメント | [MIT](LICENSE) |
+| OpenVR v2.15.6 | Valveのヘッダー・API（固定コミット） | [BSD-3-Clause](https://github.com/ValveSoftware/openvr/blob/0924064316de3effbcd1acf1e309182a2deb1c05/LICENSE) |
+| MinHook v1.3.4 | ドライバーに静的リンクするフック実装（固定コミット） | [BSD-2-Clauseと同梱HDE 32/64の通知](https://github.com/TsudaKageyu/minhook/blob/c3fcafdc10146beb5919319d0683e44e3c30d537/LICENSE.txt) |
+| Inno Setup 6 | ビルド用ツール。ランタイムはSetup・アンインストーラーに含まれる | [Inno Setup License](licenses/Inno-Setup-LICENSE.txt) |
+| OpenVR Space Calibrator | フック構成の参考。ソースファイル自体は同梱していない | [MITの参考実装通知](licenses/OpenVR-SpaceCalibrator-LICENSE.txt) |
+
+詳細な帰属・固定コミットは[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)を参照してください。
+配布パッケージとインストーラーには、`LICENSE`、`THIRD_PARTY_NOTICES.md`、`licenses/`の
+各原文を含めます。再配布する場合もこれらを残してください。Inno Setupの既存著作権表示・
+URLを削除せず、変更したInno Setup自体を配布する場合はそのライセンス条件も確認してください。
+SteamVR本体は同梱しません。SteamVR・VIVE等の名称は各権利者に帰属し、本プロジェクトは
+Valve・HTCによる公式製品や動作保証を意味しません。
+
+## プライバシーと問題報告
+
+現在のドライバー・状態画面に、独自のテレメトリ送信・クラウドアップロード機能はありません。
+診断はローカルのSteamVRログや登録情報を利用します（SteamVR自身の通信は別です）。
+ソースからのビルドでは依存物の取得、署名を指定したビルドではタイムスタンプ取得のために通信します。
+
+ログやステータス画面の詳細には、Trackerのシリアル番号、Windowsユーザー名を含むパス、
+他のVRアプリ・ドライバー情報が含まれる場合があります。公開Issueにはログ全体や画面全体を
+そのまま添付せず、必要な部分だけを取り出し、ユーザー名・パス・シリアル等を伏せてください。
+認証情報、秘密鍵、署名用証明書の秘密鍵、`.env`は投稿・コミットしないでください。
+
+開発者向けの公開前チェックは[公開準備チェックリスト](docs/public-release-checklist.md)を参照してください。

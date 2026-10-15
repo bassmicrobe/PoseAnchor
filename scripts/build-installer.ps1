@@ -50,6 +50,7 @@ $requiredFiles = @(
     'PoseAnchor.ico',
     'resources\settings\default.vrsettings',
     'README.md',
+    'MANUAL.md',
     'LICENSE',
     'THIRD_PARTY_NOTICES.md',
     'licenses\OpenVR-LICENSE.txt',
