@@ -38,9 +38,12 @@ The notice matches the Space Calibrator MIT section of the
 Other components listed in that aggregate (such as Eigen and SimpleBLE) are not
 included in PoseAnchor merely by referencing its driver architecture.
 
-PoseAnchor's icon is drawn from geometric shapes by `scripts/generate-icon.py`;
-no external image or font asset is imported by that script. Pillow is an optional
-maintainer tool for regenerating the committed icon, not a distributed runtime.
+PoseAnchor's logo and icon SVGs were supplied for this project and are preserved
+in `assets/branding/`. The wordmarks contain outlined paths; no font file is
+bundled. `scripts/generate-icon.py` converts the primary SVG into the committed
+PNG and Windows ICO using sharp (MIT) and Pillow (HPND). These are optional
+maintainer-only tools, not distributed runtime dependencies. See
+`assets/branding/README.md` for regeneration instructions.
 
 PoseAnchor's own code and documentation are under the MIT license in `LICENSE`.
 That license does not replace the terms of the third-party components above.

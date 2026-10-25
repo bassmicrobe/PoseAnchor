@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(PoseAnchor VERSION 0.1.1 LANGUAGES CXX)
+project(PoseAnchor VERSION 0.1.2 LANGUAGES CXX)
 
 include(CTest)
 include(FetchContent)
@@ -290,7 +290,10 @@ if(POSE_ANCHOR_BUILD_DRIVER)
     add_dependencies(pose_anchor_driver pose_anchor_status)
 
     if(BUILD_TESTING)
-        add_executable(pose_anchor_status_ui_tests tests/status_ui_tests.cpp)
+        add_executable(pose_anchor_status_ui_tests
+            tests/status_ui_tests.cpp
+            "${CMAKE_CURRENT_BINARY_DIR}/pose_anchor_status.rc"
+        )
         target_link_libraries(pose_anchor_status_ui_tests PRIVATE
             pose_anchor_status_parser Advapi32 Comctl32 Shell32 User32)
         target_compile_features(pose_anchor_status_ui_tests PRIVATE cxx_std_20)
@@ -333,6 +336,9 @@ if(POSE_ANCHOR_BUILD_DRIVER)
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/src/status/PoseAnchorStatus.ico"
                 "${POSE_ANCHOR_PACKAGE_DIR}/PoseAnchor.ico"
+        COMMAND "${CMAKE_COMMAND}" -E copy_directory
+                "${CMAKE_SOURCE_DIR}/assets/branding"
+                "${POSE_ANCHOR_PACKAGE_DIR}/assets/branding"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/LICENSE"
                 "${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"

@@ -5,10 +5,10 @@
   #define OutputDir "..\dist"
 #endif
 #ifndef AppVersion
-  #define AppVersion "0.1.1"
+  #define AppVersion "0.1.2"
 #endif
 #ifndef AppVersionQuad
-  #define AppVersionQuad "0.1.1.0"
+  #define AppVersionQuad "0.1.2.0"
 #endif
 
 #define AppName "PoseAnchor"
@@ -115,6 +115,10 @@ japanese.ManualShortcut=PoseAnchor マニュアル
 Source: "{#PackageDir}\driver.vrdrivermanifest"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\bin\win64\driver_pose_anchor.dll"; DestDir: "{app}\bin\win64"; Flags: ignoreversion
 Source: "{#PackageDir}\PoseAnchorStatus.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\PoseAnchor.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\assets\branding\*.svg"; DestDir: "{app}\assets\branding"; Flags: ignoreversion
+Source: "{#PackageDir}\assets\branding\poseanchor-icon.png"; DestDir: "{app}\assets\branding"; Flags: ignoreversion
+Source: "{#PackageDir}\assets\branding\README.md"; DestDir: "{app}\assets\branding"; Flags: ignoreversion
 Source: "{#PackageDir}\resources\settings\default.vrsettings"; DestDir: "{app}\resources\settings"; Flags: ignoreversion
 Source: "{#PackageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\MANUAL.md"; DestDir: "{app}"; Flags: ignoreversion
@@ -129,7 +133,7 @@ Source: "{#PackageDir}\licenses\OpenVR-SpaceCalibrator-LICENSE.txt"; DestDir: "{
 Name: "{group}\{cm:StatusShortcut}"; Filename: "{app}\PoseAnchorStatus.exe"
 Name: "{group}\{cm:ManualShortcut}"; Filename: "{sys}\notepad.exe"; Parameters: """{app}\MANUAL.md"""
 Name: "{group}\PoseAnchor README"; Filename: "{sys}\notepad.exe"; Parameters: """{app}\README.md"""
-Name: "{group}\{cm:UninstallProgram,PoseAnchor}"; Filename: "{uninstallexe}"
+Name: "{group}\{cm:UninstallProgram,PoseAnchor}"; Filename: "{uninstallexe}"; IconFilename: "{app}\PoseAnchor.ico"
 
 [Run]
 Filename: "{sys}\notepad.exe"; Parameters: """{app}\README.md"""; Description: "{cm:OpenReadme}"; Flags: postinstall skipifsilent nowait

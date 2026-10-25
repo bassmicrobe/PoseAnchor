@@ -1,4 +1,4 @@
-# PoseAnchor 0.1.1 実験版 — 簡単マニュアル
+# PoseAnchor 0.1.2 実験版 — 簡単マニュアル
 
 English quick guide follows the Japanese section.
 
@@ -9,7 +9,7 @@ PoseAnchorはWindows x64 / SteamVR / Lighthouse環境のHTC Vive Tracker向け
 HMD・コントローラー・Base Stationのposeは変更しません。
 
 実機で同一条件のON/OFF比較による改善効果は未実証です。誤判定や予測で動きが悪化する
-可能性があり、自動テストや低いCPU負荷は効果の証明ではありません。0.1.1の実機での導入・
+可能性があり、自動テストや低いCPU負荷は効果の証明ではありません。0.1.2の実機での導入・
 更新・解除、遮蔽や長時間使用の再試験も未実施です。過去版の結果と区別して扱ってください。
 
 初回はSteamVR設定とルームセットアップをバックアップし、周囲の安全を確保して
@@ -116,7 +116,7 @@ that replace the same pose function, such as Space Calibrator or Motion Compensa
 Tracking improvement has not been demonstrated by controlled ON/OFF comparisons.
 False detections or predictions can worsen motion. Automated tests and low CPU
 cost do not prove effectiveness. Live-tracker installation, upgrade, removal,
-occlusion, and long-session tests have not been repeated for 0.1.1; earlier
+occlusion, and long-session tests have not been repeated for 0.1.2; earlier
 results are not validation of this binary.
 
 1. Close SteamVR and PoseAnchor Status. Run `PoseAnchor-Setup-<version>.exe` from a

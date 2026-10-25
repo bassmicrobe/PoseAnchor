@@ -17,6 +17,14 @@ $packageDocuments = @{
     'MANUAL.md' = 'MANUAL.md'
     'LICENSE' = 'LICENSE'
     'THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
+    'PoseAnchor.ico' = 'src\status\PoseAnchorStatus.ico'
+}
+foreach ($name in @('README.md', 'poseanchor-icon.png', 'poseanchor-icon.svg',
+    'poseanchor-icon-cyan.svg', 'poseanchor-logo-horizontal-ink.svg',
+    'poseanchor-logo-horizontal-white.svg', 'poseanchor-logo-stacked-ink.svg',
+    'poseanchor-logo-stacked-white.svg', 'poseanchor-symbol-ink.svg', 'poseanchor-symbol-white.svg')) {
+    $relativePath = 'assets\branding\' + $name
+    $packageDocuments[$relativePath] = $relativePath
 }
 
 # The folder can also be distributed without the installer's explicit [Files]
@@ -43,7 +51,8 @@ function Assert-PackageInventory([string]$PackageRoot) {
         'scripts\uninstall.ps1',
         'scripts\steamvr-path.ps1'
     )
-    $expectedDirectories = @('bin', 'bin\win64', 'resources', 'resources\settings', 'licenses', 'scripts')
+    $expectedFiles += @($packageDocuments.Keys | Where-Object { $_.StartsWith('assets\branding\') })
+    $expectedDirectories = @('bin', 'bin\win64', 'resources', 'resources\settings', 'licenses', 'scripts', 'assets', 'assets\branding')
     $root = Get-Item -LiteralPath $PackageRoot -Force
     if (-not $root.PSIsContainer -or
         ($root.Attributes -band [IO.FileAttributes]::ReparsePoint)) {

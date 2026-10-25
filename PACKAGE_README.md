@@ -1,4 +1,10 @@
-# PoseAnchor 0.1.1 — 実験版 / experimental build
+# PoseAnchor 0.1.2 — 実験版 / experimental build
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/branding/poseanchor-logo-horizontal-white.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/branding/poseanchor-logo-horizontal-ink.svg">
+  <img alt="PoseAnchor" src="assets/branding/poseanchor-logo-horizontal-ink.svg" width="320" height="48">
+</picture>
 
 English installation, status, and recovery instructions follow the Japanese section.
 
@@ -18,7 +24,7 @@ Base Stationには触れません。
 
 これは実験版です。最初は転倒や衝突につながりにくいTracker 1個で試してください。
 SteamVRと「PoseAnchor ステータス」を終了し、OpenVR Space Calibrator、Motion Compensation
-など同じpose関数を変更するツールを無効化してから、配布された`PoseAnchor-Setup-0.1.1.exe`を
+など同じpose関数を変更するツールを無効化してから、配布された`PoseAnchor-Setup-0.1.2.exe`を
 ダブルクリックします。セットアップがSteamVRを検出し、ドライバ登録まで自動で行います。
 コマンド操作や管理者権限は不要です。
 
@@ -83,7 +89,7 @@ pose hook自体を導入しません。`true`に戻すと補正を有効にで�
 SteamVR更新で動かなくなる可能性があります。OSS表記は同梱の
 `THIRD_PARTY_NOTICES.md`を、ソース、設計、テストはソース配布側のREADMEを参照してください。
 
-0.1.1の実Trackerを使った新規導入・更新・解除、遮蔽、長時間使用の再試験は未実施です。
+0.1.2の実Trackerを使った新規導入・更新・解除、遮蔽、長時間使用の再試験は未実施です。
 過去版の実機試験と合成データによるテストは、この版の実機動作や改善効果を保証しません。
 異常や違和感があれば使用を中止し、SteamVRを終了して上記の手順で解除してください。
 
@@ -105,7 +111,7 @@ not a stable release or a product with guaranteed effectiveness.
 
 Close SteamVR and PoseAnchor Status, and disable other tools that replace tracker
 poses, including OpenVR Space Calibrator and Motion Compensation. Double-click
-`PoseAnchor-Setup-0.1.1.exe` and follow Setup. No commands or administrator rights
+`PoseAnchor-Setup-0.1.2.exe` and follow Setup. No commands or administrator rights
 are required. Setup detects SteamVR and registers PoseAnchor for the current user;
 it does not close SteamVR automatically. For updates, close SteamVR and PoseAnchor
 Status again before running the same installer.
@@ -163,7 +169,7 @@ PoseAnchor uses MinHook rather than a public pose-replacement API, so SteamVR up
 compatibility. See `THIRD_PARTY_NOTICES.md` for the open-source notices.
 
 Live-tracker installation, upgrade, removal, occlusion, and long-session tests
-have not been repeated for 0.1.1. Earlier live tests and synthetic tests do not
+have not been repeated for 0.1.2. Earlier live tests and synthetic tests do not
 guarantee this build's behavior or benefits. Stop using it if motion is unexpected;
 close SteamVR and follow the removal instructions above.
 

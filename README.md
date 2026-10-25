@@ -1,4 +1,10 @@
-# PoseAnchor 0.1.1 — 実験版
+# PoseAnchor 0.1.2 — 実験版
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/branding/poseanchor-logo-horizontal-white.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/branding/poseanchor-logo-horizontal-ink.svg">
+  <img alt="PoseAnchor" src="assets/branding/poseanchor-logo-horizontal-ink.svg" width="320" height="48">
+</picture>
 
 [![CI](https://github.com/bassmicrobe/PoseAnchor/actions/workflows/ci.yml/badge.svg)](https://github.com/bassmicrobe/PoseAnchor/actions/workflows/ci.yml)
 
@@ -129,7 +135,7 @@ CMakeはOpenVR v2.15.6とMinHook v1.3.4をGitのcommit hashで固定取得しま
 .\scripts\build-installer.ps1
 ```
 
-`dist\PoseAnchor-Setup-0.1.1.exe`と同名の`.exe.sha256`が生成されます。利用者側にVisual Studio、CMake、
+`dist\PoseAnchor-Setup-0.1.2.exe`と同名の`.exe.sha256`が生成されます。利用者側にVisual Studio、CMake、
 Inno Setup、PowerShell操作は不要です。
 
 配布対象はこの実験版インストーラーとチェックサムの1組だけです。旧候補・テストログ・
@@ -148,7 +154,8 @@ SHA-1 thumbprintを指定します。driver DLLと状態画面を先に署名し
 
 ### 現在の検証状況
 
-0.1.1の配布準備・検証範囲・残っている実機確認は
+0.1.2のロゴ更新と検証範囲は[ロゴ更新記録](docs/branding-update-2026-10-25.md)、
+0.1.1の配布準備と実機確認の制限は
 [実験版の配布準備記録](docs/experimental-release-2026-10-15.md)に記載しています。
 直近の性能・UI監査は[2026-10-15の監査記録](docs/performance-ui-audit-2026-10-15.md)、
 過去のリリース監査は[2026-09-26の記録](docs/release-audit-2026-09-26.md)を参照してください。
@@ -171,7 +178,7 @@ SteamVRへ登録するのは、必ず上記手順でMSVCビルドした`build\po
 
 ## 配布版のインストール / 解除
 
-SteamVRを終了し、`PoseAnchor-Setup-0.1.1.exe`をダブルクリックします。セットアップが
+SteamVRを終了し、`PoseAnchor-Setup-0.1.2.exe`をダブルクリックします。セットアップが
 SteamVRの場所を検出し、ファイル配置、既存の同名登録確認、`vrpathreg`によるドライバ登録を
 自動で行います。既定ではユーザーごとの`%LOCALAPPDATA%\Programs\PoseAnchor`へ入り、
 管理者権限やコマンド操作は不要です。
@@ -227,7 +234,7 @@ Hold/Recovery/Lostを確認できます。この画面は必要なときだけ�
 
 以下は過去版で行った参考計測です。2026-10-15の変更前後の計測は
 [性能・UI監査記録](docs/performance-ui-audit-2026-10-15.md)を参照してください。
-これらは0.1.1の実機ON/OFF比較や、トラッキング改善を示す計測ではありません。
+これらは0.1.2の実機ON/OFF比較や、トラッキング改善を示す計測ではありません。
 
 オンデマンド状態画面は20回の実機計測で起動中央値75.25 ms、表示中のPrivateメモリ中央値
 3.01 MiB（Working set 16.86 MiB）でした。全20回で画面を閉じた後の残存プロセスは0です。

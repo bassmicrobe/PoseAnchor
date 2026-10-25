@@ -1,84 +1,50 @@
-"""Regenerate the checked-in PoseAnchor Windows icon.
+"""Convert the supplied SVG into checked-in PNG/Windows ICO assets.
 
-The runtime/build does not depend on Python; this script only keeps the binary
-ICO asset reproducible for maintainers.
+Maintainer-only dependencies: Node.js + sharp, Python + Pillow. Neither the
+Windows build nor the installed app needs these tools. Use --check in asset CI.
 """
 
+import argparse
+from io import BytesIO
 from pathlib import Path
+import subprocess
 
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image
 
 
-SIZE = 1024
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "src" / "status" / "PoseAnchorStatus.ico"
-
-
-def rounded_line(draw: ImageDraw.ImageDraw, points, fill, width):
-    draw.line(points, fill=fill, width=width, joint="curve")
-    radius = width // 2
-    for x, y in (points[0], points[-1]):
-        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill)
-
-
-def render() -> Image.Image:
-    image = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
-    mask = Image.new("L", (SIZE, SIZE), 0)
-    ImageDraw.Draw(mask).rounded_rectangle((28, 28, 996, 996), radius=220, fill=255)
-
-    background = Image.new("RGBA", (SIZE, SIZE))
-    pixels = background.load()
-    for y in range(SIZE):
-        amount = y / (SIZE - 1)
-        left = (7, 20, 42)
-        right = (15, 53, 86)
-        color = tuple(round(a + (b - a) * amount) for a, b in zip(left, right))
-        for x in range(SIZE):
-            pixels[x, y] = (*color, 255)
-    image.alpha_composite(Image.composite(background, Image.new("RGBA", image.size), mask))
-
-    # A restrained cyan halo helps the white anchor remain legible at 16 px.
-    glow = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow)
-    glow_draw.ellipse((210, 70, 814, 674), outline=(51, 214, 255, 150), width=54)
-    glow = glow.filter(ImageFilter.GaussianBlur(42))
-    image.alpha_composite(glow)
-
-    draw = ImageDraw.Draw(image)
-    cyan = (91, 226, 255, 255)
-    white = (246, 251, 255, 255)
-
-    # Lighthouse tracking rays.
-    rounded_line(draw, [(340, 222), (190, 134)], cyan, 34)
-    rounded_line(draw, [(318, 292), (142, 292)], cyan, 34)
-    rounded_line(draw, [(684, 222), (834, 134)], cyan, 34)
-    rounded_line(draw, [(706, 292), (882, 292)], cyan, 34)
-
-    # Anchor ring, stem and stock.
-    draw.ellipse((421, 116, 603, 298), outline=white, width=52)
-    draw.ellipse((477, 172, 547, 242), fill=cyan)
-    rounded_line(draw, [(512, 288), (512, 705)], white, 64)
-    rounded_line(draw, [(350, 390), (674, 390)], white, 54)
-
-    # Broad lower curve and flukes stay recognizable in the smallest icon sizes.
-    draw.arc((238, 388, 786, 872), start=0, end=180, fill=white, width=70)
-    draw.polygon([(244, 610), (112, 516), (154, 716)], fill=white)
-    draw.polygon([(780, 610), (912, 516), (870, 716)], fill=white)
-
-    return image
+PNG = ROOT / "assets" / "branding" / "poseanchor-icon.png"
+SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 
 
 def main() -> None:
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    image = render()
-    preview = image.resize((256, 256), Image.Resampling.LANCZOS)
-    preview.save(
-        OUTPUT,
-        format="ICO",
-        sizes=[(16, 16), (20, 20), (24, 24), (32, 32), (40, 40),
-               (48, 48), (64, 64), (128, 128), (256, 256)],
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--node", default="node", help="Node.js executable")
+    parser.add_argument("--check", action="store_true", help="Verify without writing")
+    args = parser.parse_args()
+    # Render the actual SVG paths; do not approximate the logo with new geometry.
+    rendered = subprocess.run(
+        [args.node, str(ROOT / "scripts" / "render-icon.cjs")],
+        check=True, capture_output=True,
+    ).stdout
+    with Image.open(BytesIO(rendered)) as source:
+        image = source.convert("RGBA")
+    png = BytesIO()
+    image.save(png, format="PNG", optimize=True)
+    ico = BytesIO()
+    # Use an independently downsampled image for every ICO frame.
+    image.save(
+        ico, format="ICO", sizes=[(size, size) for size in SIZES],
     )
-    print(OUTPUT)
+    for path, data in ((PNG, png.getvalue()), (OUTPUT, ico.getvalue())):
+        if args.check:
+            if not path.is_file() or path.read_bytes() != data:
+                raise SystemExit(f"Stale branding asset: {path.relative_to(ROOT)}")
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        print(path.relative_to(ROOT))
 
 
 if __name__ == "__main__":

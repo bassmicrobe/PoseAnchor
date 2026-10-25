@@ -48,6 +48,16 @@ $requiredFiles = @(
     'bin\win64\driver_pose_anchor.dll',
     'PoseAnchorStatus.exe',
     'PoseAnchor.ico',
+    'assets\branding\poseanchor-icon.png',
+    'assets\branding\README.md',
+    'assets\branding\poseanchor-icon.svg',
+    'assets\branding\poseanchor-icon-cyan.svg',
+    'assets\branding\poseanchor-logo-horizontal-ink.svg',
+    'assets\branding\poseanchor-logo-horizontal-white.svg',
+    'assets\branding\poseanchor-logo-stacked-ink.svg',
+    'assets\branding\poseanchor-logo-stacked-white.svg',
+    'assets\branding\poseanchor-symbol-ink.svg',
+    'assets\branding\poseanchor-symbol-white.svg',
     'resources\settings\default.vrsettings',
     'README.md',
     'MANUAL.md',
@@ -85,6 +95,11 @@ $packageDocuments = @{
     'THIRD_PARTY_NOTICES.md' = 'THIRD_PARTY_NOTICES.md'
     'licenses\Inno-Setup-LICENSE.txt' = 'licenses\Inno-Setup-LICENSE.txt'
     'licenses\OpenVR-SpaceCalibrator-LICENSE.txt' = 'licenses\OpenVR-SpaceCalibrator-LICENSE.txt'
+    'PoseAnchor.ico' = 'src\status\PoseAnchorStatus.ico'
+}
+Get-ChildItem -LiteralPath (Join-Path $projectRoot 'assets\branding') -File | ForEach-Object {
+    $relativePath = 'assets\branding\' + $_.Name
+    $packageDocuments[$relativePath] = $relativePath
 }
 foreach ($relativePath in $packageDocuments.Keys) {
     $sourceHash = (Get-FileHash -LiteralPath (Join-Path $projectRoot $packageDocuments[$relativePath]) -Algorithm SHA256).Hash

@@ -139,6 +139,45 @@ Assert-True ($installerBuildSource -match '(?s)foreach \(\$relativePath in \$pac
 # explicitly and use Unicode escapes so Windows PowerShell 5.1 can run this test
 # regardless of the script's own encoding or the host ANSI code page.
 $cmakeSource = Get-Content -LiteralPath (Join-Path $projectRoot 'CMakeLists.txt') -Raw -Encoding UTF8
+foreach ($relativePath in @('README.md', 'PACKAGE_README.md')) {
+    $document = Get-Content -LiteralPath (Join-Path $projectRoot $relativePath) -Raw -Encoding UTF8
+    Assert-True ($document.Contains('prefers-color-scheme: dark') -and
+        $document.Contains('prefers-color-scheme: light') -and $document.Contains('alt="PoseAnchor"')) `
+        "README branding must support both themes and accessible fallback text: $relativePath"
+    foreach ($asset in @('poseanchor-logo-horizontal-ink.svg', 'poseanchor-logo-horizontal-white.svg')) {
+        Assert-True ($document.Contains('assets/branding/' + $asset) -and
+            (Test-Path -LiteralPath (Join-Path $projectRoot ('assets\branding\' + $asset)) -PathType Leaf)) `
+            "README logo reference must resolve locally: $asset"
+    }
+}
+Assert-True ($cmakeSource.Contains('"${CMAKE_SOURCE_DIR}/assets/branding"') -and
+    $cmakeSource.Contains('"${POSE_ANCHOR_PACKAGE_DIR}/assets/branding"')) `
+    'Packaged README logos must be staged alongside the documentation.'
+Assert-True ($installerSource.Contains('Source: "{#PackageDir}\assets\branding\*.svg"; DestDir: "{app}\assets\branding"; Flags: ignoreversion')) `
+    'Installed README logo references must resolve offline.'
+Assert-True ($installerSource.Contains('IconFilename: "{app}\PoseAnchor.ico"') -and
+    $installerSource.Contains('Source: "{#PackageDir}\PoseAnchor.ico"; DestDir: "{app}"; Flags: ignoreversion')) `
+    'The uninstall shortcut icon must be installed and tracked by Inno.'
+Assert-True ($installerBuildSource.Contains("'PoseAnchor.ico' = 'src\status\PoseAnchorStatus.ico'") -and
+    $installerBuildSource.Contains("'assets\branding\' +")) `
+    'SkipBuild must reject stale app icons and README branding assets.'
+$iconBytes = [IO.File]::ReadAllBytes((Join-Path $projectRoot 'src\status\PoseAnchorStatus.ico'))
+Assert-True ($iconBytes.Length -ge 150 -and [BitConverter]::ToUInt16($iconBytes, 0) -eq 0 -and
+    [BitConverter]::ToUInt16($iconBytes, 2) -eq 1 -and [BitConverter]::ToUInt16($iconBytes, 4) -eq 9) `
+    'Windows branding must be a valid nine-frame ICO.'
+$iconSizes = @(16, 20, 24, 32, 40, 48, 64, 128, 256)
+for ($frame = 0; $frame -lt $iconSizes.Count; $frame++) {
+    $offset = 6 + 16 * $frame
+    $dimension = $iconSizes[$frame] % 256
+    Assert-True ($iconBytes[$offset] -eq $dimension -and $iconBytes[$offset + 1] -eq $dimension) `
+        "Missing Windows icon size: $($iconSizes[$frame])"
+}
+foreach ($asset in Get-ChildItem -LiteralPath (Join-Path $projectRoot 'assets\branding') -Filter '*.svg' -File) {
+    [xml]$svg = Get-Content -LiteralPath $asset.FullName -Raw -Encoding UTF8
+    Assert-True ($svg.DocumentElement.LocalName -eq 'svg') "Invalid logo SVG: $($asset.Name)"
+    Assert-True ($svg.SelectNodes('//*[local-name()="script" or local-name()="foreignObject" or local-name()="image" or local-name()="text"]').Count -eq 0) `
+        "Branding must be self-contained vector paths without scripts, linked images or font dependencies: $($asset.Name)"
+}
 $projectVersion = [regex]::Match($cmakeSource, 'project\(PoseAnchor VERSION (\d+\.\d+\.\d+)').Groups[1].Value
 Assert-True ($projectVersion -ne '') 'The distribution version must come from CMake.'
 Assert-True ($installerSource.Contains('#define AppVersion "' + $projectVersion + '"') -and

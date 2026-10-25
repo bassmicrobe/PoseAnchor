@@ -25,11 +25,13 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iomanip>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -47,6 +49,7 @@ constexpr std::uint64_t kMaximumMetadataBytes = 2ULL * 1024ULL * 1024ULL;
 constexpr int kOpenLogButton = 1001;
 constexpr int kOpenReadmeButton = 1002;
 constexpr int kRefreshButton = 1003;
+constexpr int kApplicationIcon = 1;
 constexpr std::size_t kMaximumVisibleTrackers = 6;
 
 class UniqueHandle {
@@ -124,6 +127,11 @@ struct UiText {
     bool warning{};
 };
 
+struct IconDeleter {
+    void operator()(HICON icon) const noexcept { if (icon) DestroyIcon(icon); }
+};
+using UniqueIcon = std::unique_ptr<std::remove_pointer_t<HICON>, IconDeleter>;
+
 struct DialogContext {
     std::filesystem::path driverRoot;
     std::filesystem::path logPath;
@@ -135,6 +143,9 @@ struct DialogContext {
     UiText text;
     std::array<TASKDIALOG_BUTTON, 3> buttons{};
     TASKDIALOGCONFIG config{};
+    UniqueIcon largeIcon;
+    UniqueIcon smallIcon;
+    UINT iconDpi{};
 };
 
 [[nodiscard]] bool fileExists(const std::filesystem::path& path) noexcept {
@@ -1102,6 +1113,26 @@ HRESULT CALLBACK taskDialogCallback(HWND window, UINT notification,
     auto* context = reinterpret_cast<DialogContext*>(data);
     if (!context) return S_OK;
     if (notification == TDN_CREATED || notification == TDN_NAVIGATED) {
+        // Cache just two DPI-sized icons while the dialog is open. LR_SHARED
+        // can return the first cached size, so own these handles explicitly.
+        const auto instance = GetModuleHandleW(nullptr);
+        const UINT dpi = GetDpiForWindow(window);
+        const auto setIcon = [&](UniqueIcon& cached, WPARAM kind, int widthMetric, int heightMetric) {
+            if (!cached || context->iconDpi != dpi) {
+                UniqueIcon icon(static_cast<HICON>(LoadImageW(instance, MAKEINTRESOURCEW(kApplicationIcon),
+                    IMAGE_ICON, GetSystemMetricsForDpi(widthMetric, dpi),
+                    GetSystemMetricsForDpi(heightMetric, dpi), 0)));
+                if (icon) {
+                    SendMessageW(window, WM_SETICON, kind, reinterpret_cast<LPARAM>(icon.get()));
+                    cached = std::move(icon);
+                }
+            } else {
+                SendMessageW(window, WM_SETICON, kind, reinterpret_cast<LPARAM>(cached.get()));
+            }
+        };
+        setIcon(context->largeIcon, ICON_BIG, SM_CXICON, SM_CYICON);
+        setIcon(context->smallIcon, ICON_SMALL, SM_CXSMICON, SM_CYSMICON);
+        context->iconDpi = dpi;
         SendMessageW(window, TDM_ENABLE_BUTTON, kOpenLogButton, context->logAvailable);
         SendMessageW(window, TDM_ENABLE_BUTTON, kOpenReadmeButton, context->readmeAvailable);
     } else if (notification == TDN_EXPANDO_BUTTON_CLICKED) {
@@ -1155,7 +1186,7 @@ void configureDialog(DialogContext& context, bool refreshed) {
     if (context.expanded) config.dwFlags |= TDF_EXPANDED_BY_DEFAULT;
     config.dwCommonButtons = TDCBF_CLOSE_BUTTON;
     config.pszWindowTitle = text.title.c_str();
-    config.pszMainIcon = text.warning ? TD_WARNING_ICON : TD_INFORMATION_ICON;
+    config.pszMainIcon = text.warning ? TD_WARNING_ICON : MAKEINTRESOURCEW(kApplicationIcon);
     config.pszMainInstruction = text.mainInstruction.c_str();
     config.pszContent = text.content.c_str();
     config.cButtons = static_cast<UINT>(context.buttons.size());

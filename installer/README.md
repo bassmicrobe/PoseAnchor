@@ -72,6 +72,10 @@ project version, including when using `-SkipBuild`. Rebuild the package if the
 metadata is missing or mismatched.
 Packaging also rejects stale README/manual/license inputs, including with
 `-SkipBuild`. Restage the package after changing distribution documents.
+The same check covers the application ICO and `assets/branding/`. Supplied logo
+SVGs are bundled so the README works offline. Setup, the Status executable,
+Windows Apps and the uninstall shortcut share the primary dark-background icon.
+Normal Windows builds do not run Python, Node.js, or an SVG renderer.
 
 The current build is experimental. Setup and the Windows Apps entry say so;
 both language-specific pre-install pages explain that controlled ON/OFF benefits
