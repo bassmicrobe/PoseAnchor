@@ -24,6 +24,15 @@ benchmarks do not establish real-world tracking benefits.
 
 ## はじめて使う方へ
 
+### ダウンロード（Windows x64・実験版 0.1.2）
+
+- [インストーラー：PoseAnchor-Setup-0.1.2.exe](https://github.com/bassmicrobe/PoseAnchor/releases/download/v0.1.2/PoseAnchor-Setup-0.1.2.exe)
+- [SHA-256チェックサム：PoseAnchor-Setup-0.1.2.exe.sha256](https://github.com/bassmicrobe/PoseAnchor/releases/download/v0.1.2/PoseAnchor-Setup-0.1.2.exe.sha256)
+- [リリース説明・検証範囲・注意事項](https://github.com/bassmicrobe/PoseAnchor/releases/tag/v0.1.2)
+
+インストーラーは未署名です。Windowsや組織の方針によって警告・ブロックされる場合があります。
+SteamVRと「PoseAnchor ステータス」を完全に終了してから実行してください。
+
 [簡易マニュアル](MANUAL.md)に、コマンド不要のインストール・状態確認・困ったとき・
 アンインストールをまとめています。マニュアルは配布版にも同梱し、インストール後は
 スタートメニューの「PoseAnchor マニュアル」から開けます。
